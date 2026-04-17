@@ -1850,7 +1850,7 @@
     // ============================================================
     function connectSignaling() {
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      var wsUrl = proto + '//' + location.host + '/api/signal/ws?peerId=' + myPeerId;
+      var wsUrl = proto + '//' + location.host + '/gm1/api/signal/ws?peerId=' + myPeerId;
       console.log('Connecting to signaling:', wsUrl);
       hud.textContent = 'Connecting to signaling...';
 
