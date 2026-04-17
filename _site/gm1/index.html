@@ -614,6 +614,7 @@
       this.stam = 0.5; this.aggro = 0.5 + Math.random() * 0.5;
       this.boost = type === 'player' ? PLAYER_BOOST : 1.0;
       this.flapCD = 0;
+      this.flapPending = false; // host→client flap-event flag; reset after broadcast
       this.wAng = -Math.PI / 4; this.wTgt = -Math.PI / 4; this.wT = 0;
       this.headLean = 0;
       this.squashX = 1; this.squashY = 1;
@@ -654,7 +655,16 @@
       if (this.mDir !== 0) this.vx += this.mDir * DB_FLAP * 0.5 / this.mass;
       this.contractT = 0.35; // visible contraction pulse
     };
-    Bird.prototype.wFlap = function () { this.wTgt = Math.PI / 5; this.wT = 0.06; if (this.type === 'player') sndFlap(); };
+    Bird.prototype.wFlap = function () {
+      this.wTgt = Math.PI / 5; this.wT = 0.06;
+      this.flapPending = true;
+      if (this.type === 'player') sndFlap();
+      if (isHost && this.type === 'player') {
+        if (!Bird.prototype.wFlap._n) Bird.prototype.wFlap._n = 0;
+        Bird.prototype.wFlap._n++;
+        if (Bird.prototype.wFlap._n % 5 === 1) console.log('[GAME-FLAP HOST] bird pid=' + (this.peerId ? this.peerId.slice(0,4) : '?') + ' count=' + Bird.prototype.wFlap._n);
+      }
+    };
 
     Bird.prototype.update = function (dt) {
       if (!this.alive && !this.resp) return;
@@ -2138,12 +2148,6 @@
       }
       else if (msg.type === 'lobby-hold') {
         var si = findSlotByPeer(msg.peerId);
-        if (!handleDataMessage._recvCounter) handleDataMessage._recvCounter = {};
-        var k = msg.peerId + ':hold';
-        handleDataMessage._recvCounter[k] = (handleDataMessage._recvCounter[k] || 0) + 1;
-        if (handleDataMessage._recvCounter[k] % 15 === 1) {
-          console.log('[FLAP RECV] role=' + (isHost ? 'host' : 'client') + ' me=' + myPeerId.slice(0,4) + ' from=' + msg.peerId.slice(0,4) + ' slot=' + si + ' progress=' + Math.round(msg.progress || 0) + '%');
-        }
         if (si >= 0) {
           slots[si].holding = true;
           slots[si].progress = msg.progress || 0;
@@ -2395,7 +2399,6 @@
       holdingFlap = true;
       holdStartTime = performance.now();
       slots[mySlotIndex].holding = true;
-      console.log('[FLAP PRESSED] role=' + (isHost ? 'host' : 'client') + ' me=' + myPeerId.slice(0,4) + ' slot=' + mySlotIndex);
     }
 
     function updateHold() {
@@ -2405,13 +2408,6 @@
       var progress = Math.min(100, (elapsed / HOLD_DURATION) * 100);
       slots[mySlotIndex].progress = progress;
       // Broadcast hold progress periodically
-      var dcCount = 0, dcOpen = 0;
-      for (var _pid in dataChannels) { dcCount++; if (dataChannels[_pid] && dataChannels[_pid].readyState === 'open') dcOpen++; }
-      if (!updateHold._logCounter) updateHold._logCounter = 0;
-      updateHold._logCounter++;
-      if (updateHold._logCounter % 15 === 1) {
-        console.log('[FLAP SEND] role=' + (isHost ? 'host' : 'client') + ' me=' + myPeerId.slice(0,4) + ' progress=' + Math.round(progress) + '% dc=' + dcOpen + '/' + dcCount);
-      }
       broadcast({
         type: 'lobby-hold',
         peerId: myPeerId,
@@ -2937,14 +2933,22 @@
         if (b.passengers && b.passengers.length > 0) {
           passData = b.passengers.map(function(p) { return { pid: p.ownerPeerId, col: p.col }; });
         }
-        birdStates.push({
+        var birdOut = {
           peerId: b.peerId, slotIndex: b.slotIndex,
           x: Math.round(b.x * 10) / 10, y: Math.round(b.y * 10) / 10,
           vx: Math.round(b.vx * 10) / 10, vy: Math.round(b.vy * 10) / 10,
           st: b.st, mDir: b.mDir, alive: b.alive, resp: b.resp, respT: b.respT,
           hasRider: !!b.rider, type: b.type,
           pass: passData
-        });
+        };
+        if (b.flapPending) {
+          birdOut.fl = 1;
+          if (!hostBroadcastState._sentN) hostBroadcastState._sentN = 0;
+          hostBroadcastState._sentN++;
+          if (hostBroadcastState._sentN % 5 === 1) console.log('[GAME-FLAP SEND] bird pid=' + (b.peerId ? b.peerId.slice(0,4) : '?') + ' count=' + hostBroadcastState._sentN);
+          b.flapPending = false;
+        }
+        birdStates.push(birdOut);
       }
       // AI bird states
       var aiStates = [];
@@ -3110,6 +3114,15 @@
         }
         bird.st = bs.st; bird.mDir = bs.mDir; bird.alive = bs.alive;
         bird.resp = bs.resp; bird.respT = bs.respT;
+        if (bs.fl && !isHost) {
+          var isLocalFlapper = (bird.peerId === myPeerId || (hasLocalPlayer2 && bird.peerId === localPlayer2PeerId));
+          if (!isLocalFlapper) {
+            bird.wFlap();
+            if (!applyHostState._recvN) applyHostState._recvN = 0;
+            applyHostState._recvN++;
+            if (applyHostState._recvN % 5 === 1) console.log('[GAME-FLAP RECV] bird pid=' + (bird.peerId ? bird.peerId.slice(0,4) : '?') + ' count=' + applyHostState._recvN);
+          }
+        }
         if (bs.hasRider && !bird.rider) {
           bird.rider = new Rider(true, 1.0, bird.sf, bird.origCol || bird.col);
           bird.rider.mounted = true;
