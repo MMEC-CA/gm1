@@ -1976,7 +1976,7 @@
       };
 
       if (isInitiator) {
-        var dc = pc.createDataChannel('game');
+        var dc = pc.createDataChannel('game', { ordered: false, maxRetransmits: 0 });
         setupDataChannel(dc, peerId);
         pc.createOffer().then(function (offer) {
           return pc.setLocalDescription(offer);
@@ -2138,6 +2138,12 @@
       }
       else if (msg.type === 'lobby-hold') {
         var si = findSlotByPeer(msg.peerId);
+        if (!handleDataMessage._recvCounter) handleDataMessage._recvCounter = {};
+        var k = msg.peerId + ':hold';
+        handleDataMessage._recvCounter[k] = (handleDataMessage._recvCounter[k] || 0) + 1;
+        if (handleDataMessage._recvCounter[k] % 15 === 1) {
+          console.log('[FLAP RECV] role=' + (isHost ? 'host' : 'client') + ' me=' + myPeerId.slice(0,4) + ' from=' + msg.peerId.slice(0,4) + ' slot=' + si + ' progress=' + Math.round(msg.progress || 0) + '%');
+        }
         if (si >= 0) {
           slots[si].holding = true;
           slots[si].progress = msg.progress || 0;
@@ -2389,6 +2395,7 @@
       holdingFlap = true;
       holdStartTime = performance.now();
       slots[mySlotIndex].holding = true;
+      console.log('[FLAP PRESSED] role=' + (isHost ? 'host' : 'client') + ' me=' + myPeerId.slice(0,4) + ' slot=' + mySlotIndex);
     }
 
     function updateHold() {
@@ -2398,6 +2405,13 @@
       var progress = Math.min(100, (elapsed / HOLD_DURATION) * 100);
       slots[mySlotIndex].progress = progress;
       // Broadcast hold progress periodically
+      var dcCount = 0, dcOpen = 0;
+      for (var _pid in dataChannels) { dcCount++; if (dataChannels[_pid] && dataChannels[_pid].readyState === 'open') dcOpen++; }
+      if (!updateHold._logCounter) updateHold._logCounter = 0;
+      updateHold._logCounter++;
+      if (updateHold._logCounter % 15 === 1) {
+        console.log('[FLAP SEND] role=' + (isHost ? 'host' : 'client') + ' me=' + myPeerId.slice(0,4) + ' progress=' + Math.round(progress) + '% dc=' + dcOpen + '/' + dcCount);
+      }
       broadcast({
         type: 'lobby-hold',
         peerId: myPeerId,
