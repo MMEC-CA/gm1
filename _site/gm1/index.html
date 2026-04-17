@@ -4219,6 +4219,7 @@
         if (e.key === 'ArrowRight') { changeLevel(1); e.preventDefault(); return; }
         // Either "up" key claims P1 first time, then the OTHER "up" claims P2
         if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+          if (e.repeat) { e.preventDefault(); return; }
           var side = (e.key === 'w' || e.key === 'W') ? 'wasd' : 'arrows';
           if (mySlotIndex < 0) {
             // No P1 yet — this side claims P1
