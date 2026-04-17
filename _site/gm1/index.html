@@ -1,5 +1,5 @@
 <!DOCTYPE html><html lang="en" data-astro-cid-pnebxxf4> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"><meta name="robots" content="noindex, nofollow"><title>Joustine - Multiplayer</title><style>[data-astro-cid-pnebxxf4]{margin:0;padding:0;box-sizing:border-box}html,body{width:100%;height:100%;overflow:hidden;background:#000;touch-action:none}canvas[data-astro-cid-pnebxxf4]{display:block}#hud[data-astro-cid-pnebxxf4]{position:fixed;top:8px;left:8px;color:#aaa;font-family:monospace;font-size:12px;pointer-events:none;z-index:10}
-</style></head> <body data-astro-cid-pnebxxf4> <div id="hud" data-astro-cid-pnebxxf4></div> <canvas id="game" data-astro-cid-pnebxxf4></canvas> <script>
+</style><script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script></head> <body data-astro-cid-pnebxxf4> <div id="hud" data-astro-cid-pnebxxf4></div> <canvas id="game" data-astro-cid-pnebxxf4></canvas> <script>
     // ============================================================
     // JOUSTINE MULTIPLAYER - v2026-04-05-mp
     // ============================================================
@@ -368,36 +368,23 @@
     // QR CODE GENERATOR (minimal inline, alphanumeric mode)
     // ============================================================
     function generateQR(url) {
-      // Minimal QR code generator for short URLs
-      // Uses a lookup approach - encode data into QR format
-      var qrSize = 200;
+      var qr = qrcode(0, 'M');
+      qr.addData(url);
+      qr.make();
+      var count = qr.getModuleCount();
+      var cellSize = 8;
+      var margin = cellSize * 2;
+      var px = count * cellSize + margin * 2;
       var c = document.createElement('canvas');
-      c.width = qrSize; c.height = qrSize;
+      c.width = px; c.height = px;
       var qctx = c.getContext('2d');
-
-      // For reliability, use a simple dot-matrix encoding of the URL
-      // This creates a visual QR-like code that encodes the URL
-      // Using Version 2 QR (25x25 modules) with error correction L
-
-      // We'll use a pre-computed approach for this specific URL
-      // https://erd.mmec.ca/gm1/ - encode using a minimal QR lib
-
-      // Bit matrix generation using Reed-Solomon and masking
-      var modules = generateQRMatrix(url);
-      var moduleCount = modules.length;
-      var cellSize = Math.floor(qrSize / (moduleCount + 8)); // quiet zone
-      var offset = Math.floor((qrSize - cellSize * moduleCount) / 2);
-
-      // White background
       qctx.fillStyle = '#fff';
-      qctx.fillRect(0, 0, qrSize, qrSize);
-
-      // Draw modules
+      qctx.fillRect(0, 0, px, px);
       qctx.fillStyle = '#000';
-      for (var row = 0; row < moduleCount; row++) {
-        for (var col = 0; col < moduleCount; col++) {
-          if (modules[row][col]) {
-            qctx.fillRect(offset + col * cellSize, offset + row * cellSize, cellSize, cellSize);
+      for (var row = 0; row < count; row++) {
+        for (var col = 0; col < count; col++) {
+          if (qr.isDark(row, col)) {
+            qctx.fillRect(margin + col * cellSize, margin + row * cellSize, cellSize, cellSize);
           }
         }
       }
@@ -3440,15 +3427,12 @@
 
       // QR code (right side)
       if (qrCanvas) {
-        var qrSize = Math.min(400, GH - 250);
+        var qrSize = Math.min(800, GH - 200);
         var qrX = GW * 0.55 + (GW * 0.45 - qrSize) / 2;
         var qrY = 180;
         // URL text above QR
         ctx.fillStyle = '#aaa'; ctx.font = '20px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
         ctx.fillText('erd.mmec.ca/gm1/', qrX + qrSize / 2, qrY - 10);
-        // Draw QR with white background
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(qrX - 10, qrY - 10, qrSize + 20, qrSize + 20);
         ctx.drawImage(qrCanvas, qrX, qrY, qrSize, qrSize);
       }
 
