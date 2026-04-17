@@ -196,8 +196,9 @@
     var selectedLevel = 1;
     var countdownTimer = 0;
     var countdownStart = 0;
-    var COUNTDOWN_DURATION = 2.0; // 2 second grace period
-    var HOLD_DURATION = 1.67; // 5/3 seconds to fill
+    var COUNTDOWN_DURATION = 3.0; // 3 second grace period
+    var HOLD_DURATION = 3.0; // 3 seconds to fill
+    var prevHolding = [false, false, false, false, false, false, false, false, false, false, false, false];
 
     // Networking
     var sigSocket = null;
@@ -2437,17 +2438,20 @@
         lobbyState = 'countdown';
         countdownStart = performance.now();
         countdownTimer = COUNTDOWN_DURATION;
+        for (var i = 0; i < 12; i++) prevHolding[i] = slots[i].holding;
       }
     }
 
     function updateCountdown(dt) {
       if (lobbyState !== 'countdown') return;
-      // Extend countdown while anyone is still holding
-      var anyHolding = false;
+      // Reset only on *new* flap (transition from not-holding to holding),
+      // not while a player keeps holding from before.
+      var newFlapStarted = false;
       for (var i = 0; i < 12; i++) {
-        if (slots[i].holding) { anyHolding = true; break; }
+        if (slots[i].holding && !prevHolding[i]) newFlapStarted = true;
+        prevHolding[i] = slots[i].holding;
       }
-      if (anyHolding) {
+      if (newFlapStarted) {
         countdownStart = performance.now();
         countdownTimer = COUNTDOWN_DURATION;
         return;
@@ -3398,14 +3402,14 @@
           ctx.fillText(slot.deviceInfo || 'Joined', sx + slotW / 2, statusY);
         }
 
-        // Progress ring
+        // Progress ring — centered on slot, big enough to overlap edges while corners poke out
         if (slot.holding && !slot.ready) {
-          var cx = sx + slotW / 2, cy = sy + slotH - 25;
-          var ringR = 15;
+          var cx = sx + slotW / 2, cy = sy + slotH / 2;
+          var ringR = Math.max(slotW, slotH) * 0.55;
           ctx.beginPath();
           ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
           ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-          ctx.lineWidth = 4;
+          ctx.lineWidth = 8;
           ctx.stroke();
 
           ctx.beginPath();
@@ -3413,7 +3417,7 @@
           var endAngle = startAngle + (slot.progress / 100) * Math.PI * 2;
           ctx.arc(cx, cy, ringR, startAngle, endAngle);
           ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 4;
+          ctx.lineWidth = 8;
           ctx.stroke();
         }
 
@@ -3450,9 +3454,9 @@
       ctx.fillStyle = '#888'; ctx.font = '16px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
       ctx.fillText('Hold SPACE or TAP to claim a slot and ready up', GW * 0.5, GH - 30);
 
-      // Countdown overlay
+      // Countdown overlay — light dim so grid + rings stay readable
       if (lobbyState === 'countdown') {
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
         ctx.fillRect(0, 0, GW, GH);
         ctx.fillStyle = '#0ff'; ctx.font = 'bold 120px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(Math.ceil(countdownTimer), GW / 2, GH / 2);
