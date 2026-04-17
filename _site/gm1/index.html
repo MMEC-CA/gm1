@@ -1,26 +1,5 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <meta name="robots" content="noindex, nofollow" />
-  <title>Joustine - Multiplayer</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; touch-action: none; }
-    canvas { display: block; }
-    #hud {
-      position: fixed; top: 8px; left: 8px;
-      color: #aaa; font-family: monospace; font-size: 12px;
-      pointer-events: none; z-index: 10;
-    }
-  </style>
-</head>
-<body>
-  <div id="hud"></div>
-  <canvas id="game"></canvas>
-
-  <script is:inline>
+<!DOCTYPE html><html lang="en" data-astro-cid-pnebxxf4> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"><meta name="robots" content="noindex, nofollow"><title>Joustine - Multiplayer</title><style>[data-astro-cid-pnebxxf4]{margin:0;padding:0;box-sizing:border-box}html,body{width:100%;height:100%;overflow:hidden;background:#000;touch-action:none}canvas[data-astro-cid-pnebxxf4]{display:block}#hud[data-astro-cid-pnebxxf4]{position:fixed;top:8px;left:8px;color:#aaa;font-family:monospace;font-size:12px;pointer-events:none;z-index:10}
+</style></head> <body data-astro-cid-pnebxxf4> <div id="hud" data-astro-cid-pnebxxf4></div> <canvas id="game" data-astro-cid-pnebxxf4></canvas> <script>
     // ============================================================
     // JOUSTINE MULTIPLAYER - v2026-04-05-mp
     // ============================================================
@@ -29,7 +8,7 @@
     //   Phase 2: Game (multiplayer Joustine with authoritative host)
     // ============================================================
 
-    var BUILD = 'v2026-04-07-mp41';
+    var BUILD = 'v2026-04-17-mp91';
     var GW = 1920, GH = 1080;
     var GRAV_ACCEL = -1470;
 
@@ -38,12 +17,24 @@
     var FLAP_PWR = 300, PLAYER_BOOST = 1.2;
     var DAMP_FLY = 0.5, DAMP_WALK = 2.0;
     var BOUNCE = 0.3;
+    // Arcade Joust feel — 0.3 is what Xcode uses, but web version needs more forceful rebound without
+    // SpriteKit's continuous position correction. Higher restitution + fixed impact boost gives the
+    // "birds visibly shoot apart" read arcade Joust has.
+    var BIRD_BOUNCE = 0.7;
+    // Extra separation speed added at impact, scaled by combined approach velocity. Split evenly between
+    // both birds so each gets a visible kick away from the other.
+    var BIRD_IMPACT_KICK = 1.2;
+    // Minimum separation velocity after a bounce — even a gentle tap produces a clear "bounce off" read.
+    var BIRD_MIN_SEP = 280;
+    var MAX_BIRD_VX = 700; // velocity clamp — prevents tunneling through collision radius at high speed
+    var MAX_BIRD_VY = 900;
     var FLY_FORCE_BASE = 80;
     var WALK_SPD = 640, WALK_ACC = 400, WALK_FRIC = 0.8;
     var JOUST_THRESH = 8;
 
     // Death bird
-    var DB_W = 80, DB_H = 60, DB_FLAP = 250, DB_FLOAT = 150;
+    // DeathBird ("pufferball") — slow horizontal drift, gentle upward buoyancy, bursts downward on contraction
+    var DB_W = 110, DB_H = 110, DB_FLAP = 900, DB_FLOAT = 90;
 
     // Rider
     var RDR_W = 15, RDR_H = 20;
@@ -51,7 +42,8 @@
     var HEAT_WARN = 5.0, HEAT_DEATH = 10.0;
 
     // Game
-    var RESPAWN_T = 1.5;
+    var RESPAWN_T = 2.0; // lockout before player can drop
+    var RESPAWN_FORCE = 7.0; // forced drop after this many seconds
     var START_LIVES = 3, EXTRA1 = 100;
 
     // Control mode: 'bird' or 'rider'
@@ -175,6 +167,12 @@
     // STATE
     // ============================================================
     var lobbyState = 'lobby'; // 'lobby', 'countdown', 'game'
+    var webrtcTooltip = false; // show WebRTC explanation overlay
+    var webrtcHover = false; // mouse hovering over "WebRTC" text
+    var webrtcHitBox = null; // {x,y,w,h} in game coords, set each frame by renderLobby
+    var gameOverTime = 0; // performance.now()/1000 when game ended — 5s input lockout before return to lobby
+    var GAME_OVER_LOCKOUT = 5.0;
+    var GAME_OVER_FADE = 1.0; // fade duration at end of lockout
     var myPeerId = crypto.randomUUID().slice(0, 8);
     var myBenchmark = 0;
     var mySlotIndex = -1;
@@ -217,6 +215,7 @@
     var killStreak = 0, streakTimer = 0;
     var playerLives = {}; // peerId -> lives
     var playerScores = {}; // peerId -> score
+    var playerExtraFlash = {}; // peerId -> time remaining for extra life flash
     var rainDrops = [];
     var wave = 1;
     var allB = [];
@@ -230,15 +229,30 @@
     var lavaSources = [];
     var lavaBaseH = 0, lavaBaseTarget = 0;
     var PEAK_GROW_RATE = 30;
-    var lavaBubbles = [], lavaEruptions = [];
+    var lavaBubbles = [], lavaEruptions = [], lavaImpactWaves = [];
     var sparks = [];
     var cfg = null;
     var keys = { l: false, r: false, flap: false, dn: false };
     var flapEdge = false;
+    // Local player 2 (WASD on keyboard devices)
+    var hasLocalPlayer2 = false;
+    var localPlayer2PeerId = null;
+    var localPlayer2SlotIndex = -1;
+    var keys2 = { l: false, r: false, flap: false, dn: false };
+    var p1Side = null; // 'arrows' or 'wasd' — whichever claimed P1 first
+    var flapEdge2 = false;
+    var ctrlMode2 = 'bird';
     var lastSentKeys = '';
+    var lastSentKeys2 = '';
     var gameTick = 0;
-    var HOST_BROADCAST_INTERVAL = 1 / 10; // 10Hz (lower to avoid WebRTC buffer overflow)
+    var HOST_BROADCAST_INTERVAL = 1 / 20; // 20Hz state sync
     var lastHostBroadcast = 0;
+    // Sync fidelity (ported from Xcode version)
+    var lastStateRecvTime = 0; // local timestamp of last state received
+    var lastStateTick = -1; // tick of last state received (for dedup/ordering)
+    var steeringOffsets = {}; // peerId -> {dx, dy} velocity steering offsets (decay 0.88/frame)
+    var hardSnapTime = {}; // peerId -> timestamp of last hard snap
+    var SNAP_COOLDOWN = 0.25; // 250ms suppress collision after hard snap
     var remoteInputs = {}; // peerId -> {l,r,flap,dn,flapEdge}
 
     // QR code canvas (rendered once)
@@ -280,17 +294,55 @@
     // ============================================================
     function getDeviceInfo() {
       var ua = navigator.userAgent;
-      if (/iPhone/.test(ua)) return 'iPhone';
-      if (/iPad/.test(ua)) return 'iPad';
-      if (/Android/.test(ua)) return 'Android';
-      if (/Mac/.test(ua)) return 'Mac';
-      if (/Win/.test(ua)) return 'Windows';
-      if (/Linux/.test(ua)) return 'Linux';
+      if (/iPhone/.test(ua)) return 'iPhone (touch)';
+      if (/iPad/.test(ua)) return 'iPad (touch)';
+      if (/Android/.test(ua)) {
+        // Android phones are touch-only, tablets might have keyboard
+        if (/Mobile/.test(ua)) return 'Android (touch)';
+        return 'Android tablet (touch)';
+      }
+      // Desktop/laptop — has keyboard, can do 2-player split (arrows + WASD)
+      if (/Mac/.test(ua)) return 'Mac (\u2190\u2192 + WASD)';
+      if (/Win/.test(ua)) return 'Windows (\u2190\u2192 + WASD)';
+      if (/Linux/.test(ua)) return 'Linux (\u2190\u2192 + WASD)';
       return 'Browser';
     }
 
     function getLevelName(lv) {
       return getLevelTitle(lv);
+    }
+
+    function wrapText(ctx, text, maxW) {
+      var words = text.split(' '), lines = [], line = '';
+      for (var wi = 0; wi < words.length; wi++) {
+        var test = line ? line + ' ' + words[wi] : words[wi];
+        if (ctx.measureText(test).width > maxW && line) {
+          lines.push(line); line = words[wi];
+        } else { line = test; }
+      }
+      if (line) lines.push(line);
+      return lines;
+    }
+
+    // Wrap-aware delta (shortest path across screen-wrap boundary)
+    function wrappedDeltaX(fromX, toX) {
+      var d = toX - fromX;
+      if (d > GW / 2) d -= GW;
+      else if (d < -GW / 2) d += GW;
+      return d;
+    }
+    function wrappedLerpX(fromX, toX, alpha) {
+      var d = wrappedDeltaX(fromX, toX);
+      var result = fromX + d * alpha;
+      if (result < 0) result += GW;
+      else if (result > GW) result -= GW;
+      return result;
+    }
+    // Adaptive blend alpha: increases as snapshot ages (ported from Xcode replicaAdaptiveBlendAlpha)
+    function adaptiveBlendAlpha() {
+      if (lastStateRecvTime <= 0) return 0.5;
+      var age = (performance.now() / 1000) - lastStateRecvTime;
+      return Math.min(0.92, 0.5 + age * 2.5);
     }
 
     // ============================================================
@@ -550,10 +602,10 @@
           sub: '', rFirst: lv % 3 === 0
         };
       }
-      var lava = null;
-      if (L.lava && (L.lava.w.length > 0 || L.lava.h > 20)) {
-        lava = { baseH: L.lava.h, waves: L.lava.w };
-      }
+      // Always have at least a minimum lava base — levels without explicit lava
+      // get a default base height of 20 (red glow under the floor, like Xcode)
+      if (!L.lava) L.lava = { h: 20, w: [] };
+      var lava = { baseH: L.lava.h, waves: L.lava.w };
       return {
         level: lv, platforms: JSON.parse(JSON.stringify(ps)), birdCount: L.bc,
         stamR: L.st, skillR: L.sk, sf: sf, lava: lava, spawnDur: L.sd,
@@ -581,6 +633,14 @@
       this.resp = false; this.respT = 0;
       this.legH = 12 * sf; this.onP = null;
       this.mass = type === 'death' ? 3 : 1;
+      this.contractT = 0; // DeathBird contraction visual timer (seconds remaining)
+      this.puffPhase = Math.random() * Math.PI * 2; // pufferball idle breathing offset
+      this.riderlessT = -1; // seconds since bird lost its rider (flee timer); -1 = has rider or never had one
+      this.giveUp = false; // riderless bird has given up after 10s stuck — stops flapping, falls through platforms
+      this.fleeDelay = 0; // seconds before aiFlee begins actively fleeing (preserves bounce physics)
+      this.dying = false; // DeathBird in death-launch state (popped by rider) — no collisions
+      this.dyingT = 0; // time in dying state
+      this.bncLog = 0; // debug: frames remaining to log post-bounce state
       this.aiMode = 'patrol'; this.frust = 0; this.aiTgt = null;
       this.patDir = Math.random() < 0.5 ? -1 : 1; this.patT = 1 + Math.random() * 1.5;
       // Color: use provided color for player birds, generate for AI
@@ -604,17 +664,41 @@
     Bird.prototype.flapDn = function () {
       this.vy -= DB_FLAP / this.mass;
       if (this.mDir !== 0) this.vx += this.mDir * DB_FLAP * 0.5 / this.mass;
+      this.contractT = 0.35; // visible contraction pulse
     };
     Bird.prototype.wFlap = function () { this.wTgt = Math.PI / 5; this.wT = 0.06; if (this.type === 'player') sndFlap(); };
 
     Bird.prototype.update = function (dt) {
       if (!this.alive && !this.resp) return;
       if (this.resp) {
-        this.respT += dt; this.y = GH - 50; this.vx = 0; this.vy = 0;
+        this.respT += dt; this.y = GH - 50; this.vy = 0;
+        // Player can move drop arrow left/right with slow velocity
+        var respInput = null;
+        if (this.peerId === myPeerId) respInput = keys;
+        else if (hasLocalPlayer2 && this.peerId === localPlayer2PeerId) respInput = keys2;
+        else if (isHost && this.peerId && remoteInputs[this.peerId]) respInput = remoteInputs[this.peerId];
+        if (respInput) {
+          var respDir = respInput.l ? -1 : respInput.r ? 1 : 0;
+          var RESP_SPEED = 120; // slow movement speed
+          var RESP_FRIC = 0.92;
+          if (respDir !== 0) this.vx += respDir * RESP_SPEED * dt;
+          else this.vx *= Math.pow(RESP_FRIC, dt * 60);
+        } else {
+          this.vx = 0;
+        }
+        this.x += this.vx * dt;
+        // Edge pressure — same as birds/riders, keep away from screen edges
+        var edgeMargin = 120, edgeForce = 120;
+        if (this.x < edgeMargin) this.vx += edgeForce * (1 - this.x / edgeMargin) * dt;
+        else if (this.x > GW - edgeMargin) this.vx -= edgeForce * (1 - (GW - this.x) / edgeMargin) * dt;
+        // Hard clamp
+        if (this.x < 50) this.x = 50;
+        else if (this.x > GW - 50) this.x = GW - 50;
         return;
       }
       if (this.st === 'fly') {
-        var ga = this.type === 'death' ? GRAV_ACCEL * 0.3 : GRAV_ACCEL;
+        // DeathBirds: zero gravity, gentle upward buoyancy (pufferball drift up)
+        var ga = this.type === 'death' ? 0 : GRAV_ACCEL;
         this.vy += ga * dt;
         if (this.type === 'death') this.vy += DB_FLOAT * dt;
         var df = Math.exp(-DAMP_FLY * dt);
@@ -624,14 +708,18 @@
           var f = FLY_FORCE_BASE + 100 * this.aggro;
           this.vx += this.mDir * f / this.mass * dt;
         }
+        // Velocity clamp — prevents tunneling through bird collision radius at high speed
+        if (this.vx > MAX_BIRD_VX) this.vx = MAX_BIRD_VX; else if (this.vx < -MAX_BIRD_VX) this.vx = -MAX_BIRD_VX;
+        if (this.vy > MAX_BIRD_VY) this.vy = MAX_BIRD_VY; else if (this.vy < -MAX_BIRD_VY) this.vy = -MAX_BIRD_VY;
         this.x += this.vx * dt; this.y += this.vy * dt;
         // Screen wrap (flee birds skip wrap so they can exit)
         if (this.aiMode !== 'flee') {
-          if (this.x < -this.w) this.x = GW + this.w;
-          if (this.x > GW + this.w) this.x = -this.w;
+          if (this.x < 0) this.x += GW;
+          else if (this.x > GW) this.x -= GW;
         }
         if (this.y > GH - this.h / 2) { this.y = GH - this.h / 2; this.vy = -Math.abs(this.vy) * BOUNCE; }
-        // Platform collision
+        // Platform collision — DeathBirds (pufferballs) and give-up riderless birds pass through, skip this loop
+        if (this.type !== 'death' && !this.giveUp)
         for (var i = 0; i < plats.length; i++) {
           var p = plats[i]; if (!p.alive) continue;
           if (!platOverlapX(this.x, this.w, p)) continue;
@@ -653,11 +741,12 @@
           var diff = tgt - this.vx;
           this.vx += diff * WALK_ACC * dt * dt;
         } else { this.vx *= Math.pow(WALK_FRIC, dt * 60); }
+        if (this.vx > MAX_BIRD_VX) this.vx = MAX_BIRD_VX; else if (this.vx < -MAX_BIRD_VX) this.vx = -MAX_BIRD_VX;
         this.x += this.vx * dt; this.vy = 0;
         // Screen wrap BEFORE platform check (so bird stays on full-width platforms)
         if (this.aiMode !== 'flee') {
-          if (this.x < -this.w) this.x = GW + this.w;
-          if (this.x > GW + this.w) this.x = -this.w;
+          if (this.x < 0) this.x += GW;
+          else if (this.x > GW) this.x -= GW;
         }
         if (this.onP) {
           var op = this.onP;
@@ -680,6 +769,10 @@
           }
         }
       }
+      // Edge pressure — push away from screen edges
+      var edgeMargin = 120, edgeForce = 120;
+      if (this.x < edgeMargin) this.vx += edgeForce * (1 - this.x / edgeMargin) * dt;
+      else if (this.x > GW - edgeMargin) this.vx -= edgeForce * (1 - (GW - this.x) / edgeMargin) * dt;
       // Wing anim
       if (this.wT > 0) { this.wT -= dt; this.wAng += (this.wTgt - this.wAng) * Math.min(1, dt * 20); if (this.wT <= 0) this.wTgt = -Math.PI / 4; }
       else { this.wAng += (this.wTgt - this.wAng) * Math.min(1, dt * 6); }
@@ -691,6 +784,12 @@
       }
       this.squashX += (1 - this.squashX) * Math.min(1, dt * 12);
       this.squashY += (1 - this.squashY) * Math.min(1, dt * 12);
+      if (this.contractT > 0) this.contractT -= dt;
+      // Debug: post-bounce position/velocity trail for 3 frames
+      if (this.bncLog > 0) {
+        this.bncLog--;
+        console.log('  bnc+' + (3 - this.bncLog) + 'f', JSON.stringify(bncSnap(this, '_')));
+      }
       var spd = Math.hypot(this.vx, this.vy);
       if (spd > 150) { this.trail.push({ x: this.x, y: this.y }); if (this.trail.length > 8) this.trail.shift(); }
       else if (this.trail.length > 0) this.trail.shift();
@@ -714,18 +813,27 @@
     }
     Rider.prototype.dismount = function (vx, vy, knockedByBird) {
       this.mounted = false; this.st = 'fall'; this.vx = vx; this.vy = vy; this.heat = 0;
-      this.dismountTime = gameTime; // track when dismounted for timeout
+      this.dismountTime = gameTime;
       this.knockedOffByBird = knockedByBird || null;
       this.knockedOffTime = gameTime;
       this.lastBird = null;
+      // AI riders get smarter each time they're knocked off (max 1.0)
+      if (!this.isP) {
+        this.skill = Math.min(1.0, this.skill + 0.15);
+        this.col = 'rgb(' + Math.round(this.skill * 255) + ',' + Math.round(51 * (1 - this.skill)) + ',' + Math.round(51 * (1 - this.skill)) + ')';
+        this.summonTime = 30 * (1 - this.skill); // smarter = faster summon
+      }
       if (this.isP && this.ownerPeerId === myPeerId) {
         ctrlMode = 'rider';
-        // No rescue bird for players — they must be rescued by other players
-        // or jump onto a riderless AI bird
+      }
+      if (this.isP && hasLocalPlayer2 && this.ownerPeerId === localPlayer2PeerId) {
+        ctrlMode2 = 'rider';
       }
     };
     Rider.prototype.jump = function () {
-      if (this.st === 'walk' && this.onP) { this.st = 'fall'; this.onP = null; this.vy = RDR_JUMP * this.sf; }
+      if (this.st === 'walk' && this.onP) {
+        this.st = 'fall'; this.onP = null; this.vy = RDR_JUMP * this.sf;
+      }
     };
     Rider.prototype.update = function (dt) {
       if (!this.alive || this.mounted) return;
@@ -744,27 +852,104 @@
         }
       }
       if (this.st === 'walk') {
+        // Apply movement input — local player uses keys, remote players use remoteInputs
+        var riderInput = null;
         if (this.ownerPeerId === myPeerId && ctrlMode === 'rider') {
-          var dir = keys.l ? -1 : keys.r ? 1 : 0;
+          riderInput = keys;
+        } else if (hasLocalPlayer2 && this.ownerPeerId === localPlayer2PeerId && ctrlMode2 === 'rider') {
+          riderInput = keys2;
+        } else if (isHost && this.ownerPeerId && remoteInputs[this.ownerPeerId]) {
+          riderInput = remoteInputs[this.ownerPeerId];
+        }
+        if (riderInput) {
+          var dir = riderInput.l ? -1 : riderInput.r ? 1 : 0;
           if (dir !== 0) { var t = dir * RDR_WALK * this.sf; this.vx += (t - this.vx) * RDR_ACC * dt * dt; }
           else this.vx *= Math.pow(RDR_FRIC, dt * 60);
         }
-        // Only AI (non-player) riders wander — player riders stand still waiting for rescue
+        // Only AI (non-player) riders wander/flee — player riders stand still waiting for rescue
         if (!this.isP && this.onP) {
+          var op = this.onP;
+          var pEdgeL = op.x - op.w / 2 + 20, pEdgeR = op.x + op.w / 2 - 20;
+          var platTop = op.y + op.h / 2;
+          // Check for nearby player bird (on bird, not dismounted) — walk away if within 1/4 screen width
+          var fleeDir = 0, fleeDist = GW;
+          var quarterW = GW / 4;
+          for (var fbi = 0; fbi < gameBirds.length; fbi++) {
+            var fb = gameBirds[fbi];
+            if (!fb.alive || fb.resp || !fb.rider) continue;
+            var fdx = fb.x - this.x;
+            var fad = Math.abs(fdx);
+            if (fad < quarterW && fad < fleeDist) {
+              fleeDist = fad;
+              fleeDir = fdx < 0 ? 1 : -1; // walk away from bird
+            }
+          }
           if (!this._wanderDir) this._wanderDir = Math.random() < 0.5 ? -1 : 1;
           if (!this._wanderT) this._wanderT = 1 + Math.random() * 3;
           this._wanderT -= dt;
           if (this._wanderT <= 0) { this._wanderDir *= -1; this._wanderT = 1 + Math.random() * 3; }
-          var pEdgeL = this.onP.x - this.onP.w / 2 + 20, pEdgeR = this.onP.x + this.onP.w / 2 - 20;
-          if (this.x < pEdgeL) this._wanderDir = 1;
-          if (this.x > pEdgeR) this._wanderDir = -1;
+          // Player bird nearby — walk away from it
+          var fleeing = false;
+          if (fleeDir !== 0) {
+            // Check if escape direction leads into deadly lava
+            var wouldDieFromLava = false;
+            // Check if a lava wave is peaking above platform surface in escape direction
+            if (lavaH !== null) {
+              var lhEsc = getLavaHeightAt(this.x + fleeDir * 60);
+              if (lhEsc !== null && lhEsc > platTop + 5) wouldDieFromLava = true;
+            }
+            if (!wouldDieFromLava) {
+              this._wanderDir = fleeDir;
+              fleeing = true;
+            }
+            // At platform edge while fleeing? Jump OFF (with horizontal momentum)
+            var atEdge = (fleeDir > 0 && this.x > pEdgeR - 10) || (fleeDir < 0 && this.x < pEdgeL + 10);
+            if (fleeing && atEdge) {
+              // Check lava below the edge before jumping off
+              var offEdgeX = fleeDir > 0 ? op.x + op.w / 2 + 30 : op.x - op.w / 2 - 30;
+              var lavaDeadlyBelow = false;
+              if (lavaH !== null) {
+                var lhOff = getLavaHeightAt(offEdgeX);
+                if (lhOff !== null && lhOff > platTop - 30) lavaDeadlyBelow = true;
+              }
+              if (!lavaDeadlyBelow) {
+                this.jump();
+                this.vx = fleeDir * RDR_WALK * this.sf * 0.4; // horizontal push off edge
+              }
+            }
+          }
+          // Platform edge keeps rider on platform — but NOT when fleeing off the edge
+          if (!fleeing) {
+            if (this.x < pEdgeL) this._wanderDir = 1;
+            if (this.x > pEdgeR) this._wanderDir = -1;
+          }
           var wt = this._wanderDir * RDR_WALK * this.sf * 0.3;
           this.vx += (wt - this.vx) * RDR_ACC * dt * dt;
         }
+        // Edge pressure for dismounted riders — skip on wrap platforms
+        if (!this.onP || !this.onP.wrap) {
+          var rEdgeM = 120, rEdgeF = 80;
+          if (this.x < rEdgeM) this.vx += rEdgeF * (1 - this.x / rEdgeM) * dt;
+          else if (this.x > GW - rEdgeM) this.vx -= rEdgeF * (1 - (GW - this.x) / rEdgeM) * dt;
+        }
         this.x += this.vx * dt;
+        // Screen wrap for riders on wrap platforms
+        if (this.onP && this.onP.wrap) {
+          if (this.x < 0) this.x += GW;
+          else if (this.x > GW) this.x -= GW;
+        }
         if (this.onP) {
           var op = this.onP; this.y = op.y + op.h / 2 + this.h / 2;
-          if (!op.alive || this.x < op.x - op.w / 2 - this.w || this.x > op.x + op.w / 2 + this.w) { this.st = 'fall'; this.onP = null; this.heat = 0; }
+          if (!op.alive) { this.st = 'fall'; this.onP = null; this.heat = 0; }
+          else {
+            var onNorm = (this.x >= op.x - op.w / 2 - this.w && this.x <= op.x + op.w / 2 + this.w);
+            var onWrp = false;
+            if (op.wrap) {
+              var rwx = op.id === 'left_mid' ? op.x + GW : op.x - GW;
+              onWrp = (this.x >= rwx - op.w / 2 - this.w && this.x <= rwx + op.w / 2 + this.w);
+            }
+            if (!onNorm && !onWrp) { this.st = 'fall'; this.onP = null; this.heat = 0; }
+          }
         }
         // Heat/cooking on bottom platform
         if (this.isP && this.onP) {
@@ -826,8 +1011,8 @@
         if (sp.life <= 0) this.smokeParticles.splice(i, 1);
       }
       if (this.y < -100) this.alive = false;
-      if (this.x < -this.w) this.x = GW + this.w;
-      if (this.x > GW + this.w) this.x = -this.w;
+      if (this.x < 0) this.x += GW;
+      else if (this.x > GW) this.x -= GW;
     };
 
     // ============================================================
@@ -887,9 +1072,17 @@
           var md = (a.w + b.w) * 0.6;
           if (dist < md && dist > 0) {
             var hd = a.y - b.y;
-            if (a.type === 'death' && b.rider) { killRider(b); bnc(a, b, dx, dy, dist); continue; }
-            if (b.type === 'death' && a.rider) { killRider(a); bnc(a, b, dx, dy, dist); continue; }
+            // Dying (popped) DeathBird: no interactions with anything
+            if ((a.type === 'death' && a.dying) || (b.type === 'death' && b.dying)) continue;
+            // DeathBird vs mounted bird: only kills PLAYER riders; bounces off AI birds harmlessly
+            if (a.type === 'death' && b.rider) { if (b.type === 'player' || b.rider.isP) killRider(b); bnc(a, b, dx, dy, dist); continue; }
+            if (b.type === 'death' && a.rider) { if (a.type === 'player' || a.rider.isP) killRider(a); bnc(a, b, dx, dy, dist); continue; }
+            // DeathBird vs riderless bird — just bounce
+            if (a.type === 'death' || b.type === 'death') { bnc(a, b, dx, dy, dist); continue; }
             if (a.rider && b.rider) {
+              // AI-vs-AI: just bounce harmlessly (arcade Joust behavior — AI never jousts AI)
+              var playerInvolved = a.rider.isP || b.rider.isP || a.type === 'player' || b.type === 'player';
+              if (!playerInvolved) { bnc(a, b, dx, dy, dist); continue; }
               var th = JOUST_THRESH * Math.max(a.sf, b.sf);
               if (Math.abs(hd) <= th) bnc(a, b, dx, dy, dist);
               else if (hd > 0) { jWin(a, b); bnc(a, b, dx, dy, dist); }
@@ -919,17 +1112,49 @@
           var r = dRiders[j]; if (!r.alive || r.mounted) continue;
           var pickDist = Math.hypot(r.x - bird.x, r.y - bird.y);
           if (pickDist > (bird.w / 2 + r.w) * 0.9) continue;
-          // Death bird kills all riders
-          if (bird.type === 'death') { r.alive = false; sndKill(); continue; }
+          // DeathBird (pufferball) vs dismounted rider
+          if (bird.type === 'death') {
+            if (bird.dying) continue; // already popped — no interaction
+            // Can the rider pop the pufferball?
+            //   (A) Rider was knocked off a bird → can kill from any angle
+            //   (B) Rider jumped off a platform → must be above the deathbird
+            var knockedOff = !!r.knockedOffByBird;
+            var ridersAboveDB = r.y > bird.y;
+            var canKill = knockedOff || ridersAboveDB;
+            if (canKill) {
+              // Pop it — deathbird blows offscreen in direction of rider's approach (rider momentum)
+              bird.dying = true; bird.dyingT = 0;
+              // Direction to fling: match rider's incoming horizontal velocity; fallback to sign of (db - rider)
+              var flingDir = Math.abs(r.vx) > 30 ? (r.vx > 0 ? 1 : -1) : (bird.x - r.x > 0 ? 1 : -1);
+              bird.vx = flingDir * 900;
+              bird.vy = 60 + Math.random() * 80;
+              bird.rider = null;
+              // Score + sound for player riders
+              if (r.isP) { addScore(30, bird.x, bird.y, true, r.ownerPeerId); }
+              sndKill();
+              // Rider gets a small bounce back
+              r.vx = -flingDir * 120;
+              r.vy = Math.max(r.vy, 200);
+              continue;
+            }
+            // Not killable from this angle — deathbird still kills player rider, or ignores AI rider
+            if (r.isP) { r.alive = false; sndKill(); }
+            continue;
+          }
           if (!bird.rider) {
             if (r.lastBird === bird) continue;
             if (r.knockedOffByBird === bird && (gameTime - r.knockedOffTime) < 0.25) continue;
+            // Player rider must drop onto bird from above with real downward velocity
+            if (r.isP && (bird.type === 'ai' || bird.type === 'rescue')) {
+              var rAbove = r.y > bird.y; // rider above bird (Y up)
+              var rFalling = r.vy < -80; // significant downward velocity
+              if (!rAbove || !rFalling) continue; // must land on top, not walk into
+            }
             // Riderless bird picks up nearby rider
             bird.rider = r; r.mounted = true; r.st = 'mounted'; r.onP = null; r.heat = 0;
             r.knockedOffByBird = null; r.lastBird = null;
             if (r.isP && r.ownerPeerId) {
               // Player rider mounts this bird — bird becomes that player's bird
-              // Only host modifies gameBirds (client syncs via applyHostState)
               if (isHost) {
                 bird.type = 'player'; bird.boost = PLAYER_BOOST;
                 bird.aiMode = 'patrol';
@@ -941,12 +1166,40 @@
                 if (aiIdx >= 0) aiBirds.splice(aiIdx, 1);
               }
               if (r.ownerPeerId === myPeerId) ctrlMode = 'bird';
+            } else if (!r.isP && (bird.type === 'ai' || bird.type === 'rescue')) {
+              // AI rider mounts AI bird — upgrade bird color based on rider skill
+              bird.stam = Math.min(1.0, Math.max(bird.stam || 0.5, r.skill));
+              bird.cs = Math.round(bird.stam * 80); bird.cl = 30 + Math.round(bird.stam * 30);
+              bird.col = 'hsl(' + bird.ch + ',' + bird.cs + '%,' + bird.cl + '%)';
             }
             continue;
           }
           // Mounted bird interactions with dismounted riders
           if (bird.rider) {
             if (r.knockedOffByBird === bird && (gameTime - r.knockedOffTime) < 1.0) continue;
+            // AI rider lands on any AI bird (ai/rescue) — smarter rider takes control, upgrades bird
+            if (!r.isP && (bird.type === 'ai' || bird.type === 'rescue')) {
+              var smarterRider = r.skill >= bird.rider.skill ? r : bird.rider;
+              var dumberRider = r.skill >= bird.rider.skill ? bird.rider : r;
+              // Smarter rider takes control
+              bird.rider = smarterRider;
+              smarterRider.mounted = true; smarterRider.st = 'mounted'; smarterRider.onP = null; smarterRider.heat = 0;
+              smarterRider.knockedOffByBird = null; smarterRider.lastBird = null;
+              // Dumber rider is dropped off
+              dumberRider.mounted = false; dumberRider.st = 'fall';
+              dumberRider.x = bird.x; dumberRider.y = bird.y - bird.h;
+              dumberRider.vx = (Math.random() - 0.5) * 100; dumberRider.vy = 100;
+              dumberRider.dismountTime = gameTime;
+              if (dRiders.indexOf(dumberRider) < 0) dRiders.push(dumberRider);
+              // Remove the picked-up rider from dRiders if it was there
+              var drIdx = dRiders.indexOf(smarterRider);
+              if (drIdx >= 0) dRiders.splice(drIdx, 1);
+              // Upgrade bird color — brighter red with rider intelligence
+              bird.stam = Math.min(1.0, (bird.stam || 0.5) + 0.1);
+              bird.cs = Math.round(bird.stam * 80); bird.cl = 30 + Math.round(bird.stam * 30);
+              bird.col = 'hsl(' + bird.ch + ',' + bird.cs + '%,' + bird.cl + '%)';
+              continue;
+            }
             // PLAYER bird rescues dismounted PLAYER rider (carry to heaven)
             if (bird.type === 'player' && r.isP && r.ownerPeerId !== bird.peerId) {
               // Add as passenger — rider is rescued!
@@ -957,46 +1210,99 @@
               playTone(880, 0.1, 0.2); setTimeout(function () { playTone(1100, 0.15, 0.25); }, 100);
               continue;
             }
-            // AI bird kills dismounted player rider
-            if (bird.type === 'ai' && r.isP) {
-              var rOwner = r.ownerPeerId;
-              if (isHost) {
-                r.alive = false; // host-only: kill rider
-                if (rOwner) {
-                  if (playerLives[rOwner] === undefined) playerLives[rOwner] = START_LIVES;
-                  playerLives[rOwner]--;
+            // Player rider vs AI bird: hijack if dropping from above, otherwise AI kills rider
+            if ((bird.type === 'ai' || bird.type === 'rescue') && r.isP) {
+              var rAbove2 = r.y > bird.y;
+              var rFalling2 = r.vy < -80;
+              if (!rAbove2 || !rFalling2) {
+                // AI bird kills dismounted player rider (not dropping from above)
+                var rOwner = r.ownerPeerId;
+                if (isHost) {
+                  r.alive = false;
+                  if (rOwner) {
+                    if (playerLives[rOwner] === undefined) playerLives[rOwner] = START_LIVES;
+                    playerLives[rOwner]--;
+                  }
                 }
+                sndKill();
+                continue;
               }
-              sndKill();
-              // (death text removed — respawn indicator at top is sufficient)
+              if (isHost) {
+                // Boot the AI rider off
+                var bootedRider = bird.rider;
+                bootedRider.mounted = false; bootedRider.st = 'fall';
+                bootedRider.x = bird.x; bootedRider.y = bird.y - bird.h;
+                bootedRider.vx = (Math.random() - 0.5) * 150; bootedRider.vy = 150;
+                bootedRider.dismountTime = gameTime;
+                bootedRider.knockedOffByBird = bird;
+                bootedRider.knockedOffTime = gameTime;
+                if (dRiders.indexOf(bootedRider) < 0) dRiders.push(bootedRider);
+                // Player rider mounts the bird
+                bird.rider = r; r.mounted = true; r.st = 'mounted'; r.onP = null; r.heat = 0;
+                r.knockedOffByBird = null; r.lastBird = null;
+                bird.type = 'player'; bird.boost = PLAYER_BOOST;
+                bird.aiMode = 'patrol';
+                bird.peerId = r.ownerPeerId;
+                bird.origCol = r.col || bird.col;
+                bird.col = r.col || bird.col;
+                if (gameBirds.indexOf(bird) < 0) gameBirds.push(bird);
+                var aiIdx2 = aiBirds.indexOf(bird);
+                if (aiIdx2 >= 0) aiBirds.splice(aiIdx2, 1);
+                // Remove player rider from dRiders
+                var drIdx2 = dRiders.indexOf(r);
+                if (drIdx2 >= 0) dRiders.splice(drIdx2, 1);
+              }
+              if (r.ownerPeerId === myPeerId) ctrlMode = 'bird';
+              fTexts.push({ text: 'HIJACKED!', x: bird.x, y: bird.y + 50, life: 2.0 });
+              playTone(660, 0.1, 0.2); setTimeout(function () { playTone(880, 0.12, 0.2); }, 100);
               continue;
             }
             // Player bird kills dismounted AI rider
             if (bird.type === 'player' && !r.isP) {
               r.alive = false; sndKill();
-              addScore(Math.round(5 + r.skill * 20), r.x, r.y, false, bird.peerId);
+              addScore(Math.ceil(1 + r.skill * 10), r.x, r.y, false, bird.peerId);
             }
           }
         }
       }
       // Lava collision
       if (lavaH !== null) {
-        for (var i = 0; i < allB.length; i++) { var b = allB[i]; if (b.alive) { var lh = getLavaHeightAt(b.x); if (lh !== null && b.y - b.h / 2 < lh) { if (b.rider) killRider(b); b.alive = false; } } }
+        for (var i = 0; i < allB.length; i++) {
+          var b = allB[i];
+          if (!b.alive) continue;
+          if (b.type === 'death') continue; // DeathBirds fly under lava unharmed
+          var lh = getLavaHeightAt(b.x);
+          if (lh !== null && b.y - b.h / 2 < lh) {
+            spawnLavaSplash(b.x, lh, 1.0);
+            if (b.rider) killRider(b);
+            b.alive = false;
+          }
+        }
         if (isHost) for (var i = 0; i < dRiders.length; i++) {
           var r = dRiders[i]; if (!r.alive) continue;
           var lh = getLavaHeightAt(r.x);
           if (lh !== null && r.y - r.h / 2 < lh) {
+            spawnLavaSplash(r.x, lh, 0.6);
             r.alive = false;
-            // (death text removed — respawn indicator at top is sufficient)
           }
         }
       }
     }
 
+    function bncSnap(bird, label) {
+      return { lbl: label, type: bird.type, st: bird.st, pid: bird.peerId ? bird.peerId.slice(0, 4) : null, x: Math.round(bird.x), y: Math.round(bird.y), vx: Math.round(bird.vx), vy: Math.round(bird.vy), rider: bird.rider ? (bird.rider.isP ? 'P' : 'ai') : '-' };
+    }
     function bnc(a, b, dx, dy, dist) {
+      // n points from A → B. v_rel · n > 0 means A is closing on B (approaching).
+      // Standard rigid-body convention: bounce only if approaching; skip if already separating
+      // (otherwise we'd yank them back together after they've passed each other).
       var nx = dx / dist, ny = dy / dist;
       var dvn = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
-      if (dvn > 0) return;
+      if (dvn < 0) return; // already separating — leave them alone
+      // Debug: log bird-vs-bird bounces involving a player (keeps noise down)
+      var logThis = (a.type === 'player' || b.type === 'player') && a.alive && b.alive;
+      var preA = logThis ? bncSnap(a, 'A') : null;
+      var preB = logThis ? bncSnap(b, 'B') : null;
       if (a.type === 'player' || b.type === 'player') sndBounce();
       var cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
       var impactSpd = Math.abs(dvn);
@@ -1006,12 +1312,33 @@
           sparks.push({ x: cx, y: cy, vx: (Math.random() - 0.5) * impactSpd * 1.5, vy: (Math.random() - 0.5) * impactSpd * 1.5 + 100, life: 0.3 + Math.random() * 0.3, col: a.type === 'player' || b.type === 'player' ? '#0ff' : '#fa0' });
         }
       }
-      var j = -(1 + BOUNCE) * dvn / (1 / a.mass + 1 / b.mass);
+      var j = -(1 + BIRD_BOUNCE) * dvn / (1 / a.mass + 1 / b.mass);
       a.vx += j * nx / a.mass; a.vy += j * ny / a.mass;
       b.vx -= j * nx / b.mass; b.vy -= j * ny / b.mass;
+      // Arcade-style impact kick: extra separation velocity proportional to combined approach speed.
+      // Splits the kick evenly so both birds visibly shoot apart at contact. Ensures a minimum rebound
+      // so even glancing blows produce a definite "bounce off" feel.
+      var kick = Math.max(BIRD_MIN_SEP, dvn * BIRD_IMPACT_KICK);
+      var kickPer = kick * 0.5;
+      a.vx -= kickPer * nx / a.mass; a.vy -= kickPer * ny / a.mass;
+      b.vx += kickPer * nx / b.mass; b.vy += kickPer * ny / b.mass;
       var bmd = (a.w + b.w) * 0.6;
-      var ov = Math.max(1, (bmd - dist) / 2);
+      // Push positions apart to just outside the collision radius in one frame, matching SpriteKit's
+      // position correction. Now that the bounce fires at first contact (not after tunneling), the push
+      // distance is small — normal approach overlap is only a few pixels, not the 50+ we saw before.
+      var ov = Math.max(1, (bmd + 2 - dist) / 2);
+      // Any walking bird taking a bounce kicks off the platform — otherwise walk-state vy=0 and y-snap cancel the vertical bounce.
+      if (a.st === 'walk') { a.st = 'fly'; a.onP = null; a.squashX = 0.85; a.squashY = 1.2; }
+      if (b.st === 'walk') { b.st = 'fly'; b.onP = null; b.squashX = 0.85; b.squashY = 1.2; }
       a.x -= ov * nx; a.y -= ov * ny; b.x += ov * nx; b.y += ov * ny;
+      if (logThis) {
+        console.log('BNC t=' + gameTime.toFixed(2), 'dvn=' + Math.round(dvn), 'ov=' + Math.round(ov), 'j=' + Math.round(j), 'n=(' + nx.toFixed(2) + ',' + ny.toFixed(2) + ')');
+        console.log('  preA', JSON.stringify(preA));
+        console.log('  preB', JSON.stringify(preB));
+        console.log('  postA', JSON.stringify(bncSnap(a, 'A')));
+        console.log('  postB', JSON.stringify(bncSnap(b, 'B')));
+        a.bncLog = 3; b.bncLog = 3;
+      }
     }
 
     function jWin(winner, loser) {
@@ -1047,10 +1374,12 @@
         loser.passengers = null;
       }
       sndKnockOff();
-      if (winner.type === 'player' && !rider.isP) { addScore(Math.round(10 + rider.skill * 40 + (loser.stam || 0) * 20), loser.x, loser.y, true); sndKill(); }
+      if (winner.type === 'player' && !rider.isP) { addScore(Math.ceil(1 + rider.skill * 10 + (loser.stam || 0) * 10), loser.x, loser.y, true, winner.peerId); sndKill(); }
       // Riderless bird flees off screen
       loser.aiMode = 'flee';
       loser.peerId = null; // player bird no longer belongs to anyone
+      loser.riderlessT = 0; // start 10s escape countdown
+      loser.fleeDelay = 0.6; // brief pause so the bounce physics read as equal-mass
       if (loser.cs !== undefined) { loser.cs = 20; loser.cl = 40; loser.col = 'hsl(' + loser.ch + ',' + loser.cs + '%,' + loser.cl + '%)'; }
       else { loser.col = dimColor(loser.col); }
     }
@@ -1095,7 +1424,7 @@
         else bird.alive = false;
       } else {
         r.alive = false;
-        if (bird.type === 'ai') { bird.aiMode = 'flee'; bird.col = dimColor(bird.col); }
+        if (bird.type === 'ai') { bird.aiMode = 'flee'; bird.col = dimColor(bird.col); bird.riderlessT = 0; bird.fleeDelay = 0.6; }
       }
     }
 
@@ -1145,7 +1474,7 @@
       }
     }
     function updateLava(dt) {
-      if (!cfg || (!cfg.lava && lavaPeaks.length === 0)) { lavaH = null; return; }
+      if (!cfg || (!cfg.lava && lavaPeaks.length === 0 && lavaBaseH <= 0)) { lavaH = null; return; }
       if (lavaBaseTarget !== lavaBaseH) {
         var diff = lavaBaseTarget - lavaBaseH;
         lavaBaseH += diff * Math.min(1, dt * 0.5);
@@ -1183,6 +1512,51 @@
       lavaH = (lavaPeaks.length > 0 || lavaBaseH > 0) ? lavaBaseH + maxAmp : null;
     }
 
+    // Spawn lava splash: eruption particles + 2 impact waves spreading outward
+    function spawnLavaSplash(impactX, surfaceH, scale) {
+      // Eruption particles burst from impact point
+      var numBlobs = Math.floor((5 + Math.random() * 8) * scale);
+      for (var eb = 0; eb < numBlobs; eb++) {
+        var angle = (0.2 + Math.random() * 0.6) * Math.PI;
+        var spd = (200 + Math.random() * 350) * scale;
+        lavaEruptions.push({
+          x: impactX + (Math.random() - 0.5) * 20,
+          y: surfaceH,
+          vx: Math.cos(angle) * spd * (Math.random() < 0.5 ? 1 : -1),
+          vy: Math.sin(angle) * spd,
+          r: 2 + Math.random() * 4,
+          life: 0.4 + Math.random() * 0.5
+        });
+      }
+      // 2 impact waves spreading left and right
+      lavaImpactWaves.push({ x: impactX, amp: 18 * scale, speed: -400, life: 1.0, maxLife: 1.0, wl: 80 });
+      lavaImpactWaves.push({ x: impactX, amp: 18 * scale, speed: 400, life: 1.0, maxLife: 1.0, wl: 80 });
+    }
+    function updateImpactWaves(dt) {
+      for (var i = lavaImpactWaves.length - 1; i >= 0; i--) {
+        var w = lavaImpactWaves[i];
+        w.x += w.speed * dt;
+        w.life -= dt;
+        if (w.life <= 0 || w.x < -200 || w.x > GW + 200) {
+          lavaImpactWaves.splice(i, 1);
+        }
+      }
+    }
+    function impactWaveHeightAt(worldX) {
+      var h = 0;
+      for (var i = 0; i < lavaImpactWaves.length; i++) {
+        var w = lavaImpactWaves[i];
+        var dist = Math.abs(worldX - w.x);
+        var half = w.wl / 2;
+        if (dist < half) {
+          var fade = w.life / w.maxLife;
+          var cosVal = Math.cos((dist / half) * Math.PI);
+          h += w.amp * cosVal * fade;
+        }
+      }
+      return h;
+    }
+
     // ============================================================
     // AI (time-based, matches test.astro)
     // ============================================================
@@ -1191,7 +1565,7 @@
       // Riderless player birds just flee (no AI patrol/attack)
       if (b.type === 'player' && !b.rider && b.aiMode === 'flee') { aiFlee(b, dt); return; }
       if (b.type !== 'ai' && b.type !== 'rescue') return;
-      if (!b.rider && b.type === 'ai') b.aiMode = 'flee';
+      if (!b.rider && b.type === 'ai') { if (b.aiMode !== 'flee') { b.aiMode = 'flee'; b.riderlessT = 0; b.fleeDelay = 0.6; } }
       // Rescue bird: fly toward dismounted rider to pick them up
       if (b.type === 'rescue' && !b.rider) {
         var tgt = b.rescueTarget;
@@ -1259,6 +1633,23 @@
       if (b.frust > 10) b.vx += b.mDir * 200 / b.mass * dt;
     }
     function aiFlee(b, dt) {
+      // Track how long this bird has been trying to escape
+      if (b.riderlessT >= 0) b.riderlessT += dt;
+      // After 10s stuck on-screen, give up: stop flapping, fall through platforms, sink into lava
+      if (!b.giveUp && b.riderlessT >= 10) {
+        b.giveUp = true;
+        b.onP = null; // drop off any platform
+        b.st = 'fly';
+      }
+      // Brief bounce-preservation delay before actively fleeing (so joust collision reads as equal-mass)
+      if (b.fleeDelay > 0) { b.fleeDelay -= dt; return; }
+      if (b.giveUp) {
+        // No horizontal force, no flapping — just falls. Allow off-screen removal via lava drop.
+        // (Platform pass-through handled in Bird.update via b.giveUp check.)
+        if (b.x < -200 || b.x > GW + 200) b.alive = false;
+        if (b.y < -100) b.alive = false; // fell off bottom with no lava
+        return;
+      }
       b.mDir = b.x < GW / 2 ? -1 : 1;
       b.vx += b.mDir * 200 / b.mass * dt;
       if (Math.random() < 3 * dt) b.doFlap();
@@ -1384,6 +1775,7 @@
       for (var pid in playerLives) { if (playerLives[pid] > 0) { anyAlive = true; break; } }
       if (!anyAlive && gameBirds.length === 0 && lobbyState === 'game') {
         lobbyState = 'gameover';
+        gameOverTime = performance.now() / 1000;
         // Find winner (highest score)
         var winnerPid = null, winnerScore = -1;
         for (var pid in playerScores) {
@@ -1391,13 +1783,16 @@
         }
         var winnerName = '?';
         for (var si = 0; si < 12; si++) { if (slots[si].peerId === winnerPid) { winnerName = SLOT_COLORS[si].name; break; } }
-        fTexts.push({ text: 'GAME OVER', x: GW / 2, y: GH * 0.7, life: 999 });
-        if (winnerPid === myPeerId) {
-          fTexts.push({ text: 'YOU ARE WINNER!', x: GW / 2, y: GH * 0.55, life: 999 });
-        } else {
-          fTexts.push({ text: winnerName + ' wins!', x: GW / 2, y: GH * 0.55, life: 999 });
+        var nPlayersGO = Object.keys(playerScores).length;
+        fTexts.push({ text: 'GAME OVER', x: GW / 2, y: GH * 0.6, life: 999, size: 120, stat: true, go: 'main' });
+        if (nPlayersGO > 1) {
+          if (winnerPid === myPeerId) {
+            fTexts.push({ text: 'YOU ARE WINNER!', x: GW / 2, y: GH * 0.45, life: 999, size: 56, stat: true, go: 'main' });
+          } else {
+            fTexts.push({ text: winnerName + ' wins!', x: GW / 2, y: GH * 0.45, life: 999, size: 56, stat: true, go: 'main' });
+          }
         }
-        fTexts.push({ text: 'Tap to return to lobby', x: GW / 2, y: GH * 0.4, life: 999 });
+        fTexts.push({ text: 'FLAP TO RETURN TO LOBBY', x: GW / 2, y: GH * 0.5, life: 999, size: 40, stat: true, go: 'prompt' });
         playTone(440, 0.2, 0.3); setTimeout(function () { playTone(330, 0.2, 0.3); }, 200);
         setTimeout(function () { playTone(220, 0.4, 0.25); }, 400);
         broadcast({ type: 'gameover', wave: wave, winnerPid: winnerPid, winnerName: winnerName, pScores: playerScores });
@@ -1420,20 +1815,32 @@
       aiBirds.push(rb); allB.push(rb);
     }
     var playerNextExtra = {}; // per-player extra life thresholds
+    function formatScore(n) {
+      if (n < 1000) return '' + n;
+      return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+    function getPlayerColor(pid) {
+      for (var i = 0; i < gameBirds.length; i++) {
+        if (gameBirds[i].peerId === pid) return gameBirds[i].origCol || gameBirds[i].col || '#fff';
+      }
+      return '#fff';
+    }
     function addScore(pts, x, y, isKill, scorePeerId) {
-      if (!isHost) { fTexts.push({ text: '' + pts, x: x, y: y, life: 1.5 }); return; }
-      score += pts;
       var pid = scorePeerId || myPeerId;
+      var pCol = getPlayerColor(pid);
+      if (!isHost) { fTexts.push({ text: '' + pts, x: x, y: y, life: 2.0, col: pCol }); return; }
+      score += pts;
       if (playerScores[pid] === undefined) playerScores[pid] = 0;
       playerScores[pid] += pts;
-      fTexts.push({ text: '' + pts, x: x, y: y, life: 1.5 });
-      // Extra life at 100, 200, 400, 800... (matches Xcode)
+      fTexts.push({ text: '' + pts, x: x, y: y, life: 2.0, col: pCol });
+      // Extra life at 100, 200, 400, 800... (matches Xcode doubling thresholds)
       if (playerLives[pid] === undefined) playerLives[pid] = START_LIVES;
       if (!playerNextExtra[pid]) playerNextExtra[pid] = EXTRA1;
       if (playerScores[pid] >= playerNextExtra[pid]) {
         playerLives[pid]++;
         playerNextExtra[pid] *= 2;
-        fTexts.push({ text: 'EXTRA LIFE!', x: GW / 2, y: GH / 2, life: 2.0 });
+        playerExtraFlash[pid] = 1.0; // 1-second flash
+        fTexts.push({ text: 'EXTRA LIFE!', x: GW / 2, y: GH * 0.6, life: 2.5, col: pCol });
         sndExtraLife();
       }
     }
@@ -1443,9 +1850,7 @@
     // ============================================================
     function connectSignaling() {
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // Only include room param if it was in the original URL (from QR scan)
-      var roomParam = (window._roomCode && !window._qrRoomCode) ? '&room=' + window._roomCode : '';
-      var wsUrl = proto + '//' + location.host + '/api/signal/ws?peerId=' + myPeerId + roomParam;
+      var wsUrl = proto + '//' + location.host + '/api/signal/ws?peerId=' + myPeerId;
       console.log('Connecting to signaling:', wsUrl);
       hud.textContent = 'Connecting to signaling...';
 
@@ -1791,14 +2196,18 @@
           gameBirds = []; aiBirds = []; dBirds = []; dRiders = []; fTexts = [];
         } else if (lobbyState === 'game') {
           lobbyState = 'gameover';
+          gameOverTime = performance.now() / 1000;
           if (msg.pScores) playerScores = msg.pScores;
-          fTexts.push({ text: 'GAME OVER', x: GW / 2, y: GH * 0.7, life: 999 });
-          if (msg.winnerPid === myPeerId) {
-            fTexts.push({ text: 'YOU ARE WINNER!', x: GW / 2, y: GH * 0.55, life: 999 });
-          } else {
-            fTexts.push({ text: (msg.winnerName || '?') + ' wins!', x: GW / 2, y: GH * 0.55, life: 999 });
+          var nPlayersGOr = msg.pScores ? Object.keys(msg.pScores).length : 0;
+          fTexts.push({ text: 'GAME OVER', x: GW / 2, y: GH * 0.6, life: 999, size: 120, stat: true, go: 'main' });
+          if (nPlayersGOr > 1) {
+            if (msg.winnerPid === myPeerId) {
+              fTexts.push({ text: 'YOU ARE WINNER!', x: GW / 2, y: GH * 0.45, life: 999, size: 56, stat: true, go: 'main' });
+            } else {
+              fTexts.push({ text: (msg.winnerName || '?') + ' wins!', x: GW / 2, y: GH * 0.45, life: 999, size: 56, stat: true, go: 'main' });
+            }
           }
-          fTexts.push({ text: 'Tap to return to lobby', x: GW / 2, y: GH * 0.4, life: 999 });
+          fTexts.push({ text: 'FLAP TO RETURN TO LOBBY', x: GW / 2, y: GH * 0.5, life: 999, size: 40, stat: true, go: 'prompt' });
           playTone(440, 0.2, 0.3); setTimeout(function () { playTone(330, 0.2, 0.3); }, 200);
           setTimeout(function () { playTone(220, 0.4, 0.25); }, 400);
         }
@@ -1817,7 +2226,6 @@
         // Host broadcast game state
         if (!isHost) {
           statesReceived++;
-          lastStateRecvTime = performance.now();
           // Observer: initialize game state on first state message
           if (lobbyState === 'observer' && !cfg && msg.wave) {
             cfg = makeLevel(msg.wave);
@@ -1827,6 +2235,12 @@
             lavaPeaks = []; lavaSources = []; lavaBaseH = 0; lavaBaseTarget = 0; lavaH = null;
             if (cfg.lava) { lavaBaseH = cfg.lava.baseH; lavaBaseTarget = cfg.lava.baseH; addLavaSources(wave, cfg.lava.waves); }
           }
+          // Packet ordering: drop stale/duplicate state packets
+          if (msg.tick !== undefined) {
+            if (msg.tick <= lastStateTick) return; // stale packet — drop
+            lastStateTick = msg.tick;
+          }
+          lastStateRecvTime = performance.now() / 1000;
           if (cfg) applyHostState(msg);
         }
       }
@@ -1895,6 +2309,66 @@
       }
     }
 
+    // Claim a second local slot for WASD player (keyboard devices only)
+    function claimLocalPlayer2() {
+      if (hasLocalPlayer2) return;
+      if (!(/Mac|Win|Linux/.test(navigator.userAgent))) return; // only keyboard devices
+      for (var i = 0; i < 12; i++) {
+        if (slots[i].peerId === null) {
+          localPlayer2PeerId = myPeerId + '-p2';
+          localPlayer2SlotIndex = i;
+          hasLocalPlayer2 = true;
+          slots[i].peerId = localPlayer2PeerId;
+          slots[i].deviceInfo = 'WASD (local)';
+          slots[i].benchmarkScore = myBenchmark;
+          broadcast({
+            type: 'lobby-join',
+            peerId: localPlayer2PeerId,
+            slotIndex: localPlayer2SlotIndex,
+            deviceInfo: 'WASD (local)',
+            benchmarkScore: myBenchmark
+          });
+          return;
+        }
+      }
+    }
+
+    var holdingFlapP2 = false, holdStartTimeP2 = 0;
+    function startHoldP2() {
+      if (lobbyState !== 'lobby' || mySlotIndex < 0) return;
+      // Claim P2 slot on first press (so it shows in lobby)
+      if (!hasLocalPlayer2) claimLocalPlayer2();
+      if (!hasLocalPlayer2) return;
+      if (slots[localPlayer2SlotIndex].ready) return;
+      holdingFlapP2 = true;
+      holdStartTimeP2 = performance.now();
+      slots[localPlayer2SlotIndex].holding = true;
+    }
+    function updateHoldP2() {
+      if (!holdingFlapP2 || !hasLocalPlayer2 || localPlayer2SlotIndex < 0) return;
+      if (slots[localPlayer2SlotIndex].ready) return;
+      var elapsed = (performance.now() - holdStartTimeP2) / 1000;
+      var progress = Math.min(100, (elapsed / HOLD_DURATION) * 100);
+      slots[localPlayer2SlotIndex].progress = progress;
+      broadcast({ type: 'lobby-hold', peerId: localPlayer2PeerId, progress: progress });
+      if (progress >= 100) {
+        slots[localPlayer2SlotIndex].ready = true;
+        slots[localPlayer2SlotIndex].holding = false;
+        holdingFlapP2 = false;
+        broadcast({ type: 'lobby-ready', peerId: localPlayer2PeerId });
+        checkCountdownStart();
+      }
+    }
+    function releaseHoldP2() {
+      if (!holdingFlapP2) return;
+      holdingFlapP2 = false;
+      if (hasLocalPlayer2 && localPlayer2SlotIndex >= 0) {
+        slots[localPlayer2SlotIndex].holding = false;
+        slots[localPlayer2SlotIndex].progress = 0;
+        broadcast({ type: 'lobby-release', peerId: localPlayer2PeerId });
+      }
+    }
+
     function startHold() {
       if (lobbyState !== 'lobby') return;
       if (mySlotIndex < 0) claimSlot();
@@ -1908,9 +2382,10 @@
       }
       rapidTapLast = now;
       if (rapidTapCount >= RAPID_TAP_THRESHOLD && mySlotIndex >= 0) {
-        // All-join: ready all occupied slots
+        // All-join: ready all occupied slots EXCEPT unready local P2 (must hold W deliberately)
         for (var i = 0; i < 12; i++) {
           if (slots[i].peerId !== null && !slots[i].ready) {
+            if (hasLocalPlayer2 && slots[i].peerId === localPlayer2PeerId) continue; // skip P2
             slots[i].ready = true;
             slots[i].progress = 100;
             slots[i].holding = false;
@@ -2044,7 +2519,7 @@
       fTexts = [];
       sparks = [];
       lavaPeaks = []; lavaSources = []; lavaBaseH = 0; lavaBaseTarget = 0; lavaH = null;
-      lavaBubbles = []; lavaEruptions = [];
+      lavaBubbles = []; lavaEruptions = []; lavaImpactWaves = [];
 
       var playerSlots = msg.playerSlots || [];
       for (var pi = 0; pi < playerSlots.length; pi++) {
@@ -2091,6 +2566,8 @@
         var input = null;
         if (bird.peerId === myPeerId) {
           input = { l: keys.l, r: keys.r, flap: keys.flap, dn: keys.dn, flapEdge: flapEdge };
+        } else if (hasLocalPlayer2 && bird.peerId === localPlayer2PeerId) {
+          input = { l: keys2.l, r: keys2.r, flap: keys2.flap, dn: keys2.dn, flapEdge: flapEdge2 };
         } else if (isHost && remoteInputs[bird.peerId]) {
           input = remoteInputs[bird.peerId];
         }
@@ -2100,6 +2577,7 @@
             var passPid = bird.passengers[pi].ownerPeerId;
             var passInput = null;
             if (passPid === myPeerId) passInput = { l: keys.l, r: keys.r, flap: keys.flap, dn: keys.dn, flapEdge: flapEdge };
+            else if (hasLocalPlayer2 && passPid === localPlayer2PeerId) passInput = { l: keys2.l, r: keys2.r, flap: keys2.flap, dn: keys2.dn, flapEdge: flapEdge2 };
             else if (isHost && remoteInputs[passPid]) passInput = remoteInputs[passPid];
             if (passInput) {
               if (!input) input = { l: false, r: false, flap: false, dn: false, flapEdge: false };
@@ -2117,26 +2595,84 @@
           else bird.mDir = 0;
 
           if (input.flapEdge) {
-            // Check for respawn drop first
-            if (bird.resp && bird.respT > RESPAWN_T) {
+            // Check if this player has a living dismounted rider — rider jump takes priority
+            var hasDismountedRider = false;
+            for (var ri = 0; ri < dRiders.length; ri++) {
+              if (dRiders[ri].alive && dRiders[ri].ownerPeerId === bird.peerId && !dRiders[ri].mounted) {
+                hasDismountedRider = true; break;
+              }
+            }
+            if (hasDismountedRider) {
+              // Rider jump (works for both local and remote players)
+              for (var ri = 0; ri < dRiders.length; ri++) {
+                var r = dRiders[ri];
+                if (r.alive && r.ownerPeerId === bird.peerId && !r.mounted) r.jump();
+              }
+            } else if (bird.resp && bird.respT > RESPAWN_T) {
+              // Respawn drop — only when no dismounted rider exists
               bird.resp = false; bird.alive = true; bird.vy = -100;
               if (bird.peerId === myPeerId) ctrlMode = 'bird';
+              if (hasLocalPlayer2 && bird.peerId === localPlayer2PeerId) ctrlMode2 = 'bird';
             } else if (!bird.resp) {
-              if (ctrlMode === 'bird') {
-                bird.doFlap();
-              } else {
-                // Rider mode - jump
-                for (var ri = 0; ri < dRiders.length; ri++) { var r = dRiders[ri]; if (r.alive && r.ownerPeerId === myPeerId && !r.mounted) r.jump(); }
-              }
+              // Normal flap
+              bird.doFlap();
             }
           }
         }
 
         bird.update(dt);
+        // Force drop after RESPAWN_FORCE seconds
+        if (bird.resp && bird.respT >= RESPAWN_FORCE) {
+          bird.resp = false; bird.alive = true; bird.vy = -100;
+          if (bird.peerId === myPeerId) ctrlMode = 'bird';
+          if (hasLocalPlayer2 && bird.peerId === localPlayer2PeerId) ctrlMode2 = 'bird';
+        }
+      }
+
+      // Rider jump for players who have no bird in gameBirds
+      // (bird got peerId=null when rider was knocked off, no respawn bird yet)
+      // Local player 1
+      if (flapEdge && ctrlMode === 'rider') {
+        var hasBirdInLoop = false;
+        for (var bi = 0; bi < gameBirds.length; bi++) { if (gameBirds[bi].peerId === myPeerId) { hasBirdInLoop = true; break; } }
+        if (!hasBirdInLoop) {
+          for (var ri = 0; ri < dRiders.length; ri++) {
+            var r = dRiders[ri];
+            if (r.alive && r.ownerPeerId === myPeerId && !r.mounted) r.jump();
+          }
+        }
+      }
+      // Local player 2
+      if (hasLocalPlayer2 && flapEdge2 && ctrlMode2 === 'rider') {
+        var hasP2Bird = false;
+        for (var bi = 0; bi < gameBirds.length; bi++) { if (gameBirds[bi].peerId === localPlayer2PeerId) { hasP2Bird = true; break; } }
+        if (!hasP2Bird) {
+          for (var ri = 0; ri < dRiders.length; ri++) {
+            var r = dRiders[ri];
+            if (r.alive && r.ownerPeerId === localPlayer2PeerId && !r.mounted) r.jump();
+          }
+        }
+      }
+      // Remote players (host only)
+      if (isHost) {
+        for (var pid in remoteInputs) {
+          var ri2 = remoteInputs[pid];
+          if (ri2 && ri2.flapEdge) {
+            var hasBird2 = false;
+            for (var bi = 0; bi < gameBirds.length; bi++) { if (gameBirds[bi].peerId === pid) { hasBird2 = true; break; } }
+            if (!hasBird2) {
+              for (var ri = 0; ri < dRiders.length; ri++) {
+                var r = dRiders[ri];
+                if (r.alive && r.ownerPeerId === pid && !r.mounted) r.jump();
+              }
+            }
+          }
+        }
       }
 
       // Clear flapEdge
       flapEdge = false;
+      flapEdge2 = false;
       for (var pid in remoteInputs) {
         if (remoteInputs[pid]) remoteInputs[pid].flapEdge = false;
       }
@@ -2192,12 +2728,29 @@
         if (gb.alive && !gb.rider && gb.aiMode === 'flee') updateAI(gb, dt);
       }
 
-      // Update death birds with targeting logic
+      // Update death birds — slow horizontal drift, contract to burst down toward nearest player
       for (var i = 0; i < dBirds.length; i++) {
-        var db = dBirds[i]; db.update(dt);
+        var db = dBirds[i];
+        if (db.dying) {
+          // Popped — fly off in fling direction, visual only, no AI, no physics updates
+          db.dyingT += dt;
+          db.x += db.vx * dt; db.y += db.vy * dt;
+          db.vy *= Math.pow(0.94, dt * 60); // slight air drag vertical
+          if (db.x < -300 || db.x > GW + 300 || db.dyingT > 3) db.alive = false;
+          continue;
+        }
+        db.update(dt);
         var tgt = null, md = 1e9;
         for (var j = 0; j < gameBirds.length; j++) { var p = gameBirds[j]; if (p.alive && !p.resp) { var d = Math.hypot(p.x - db.x, p.y - db.y); if (d < md) { md = d; tgt = p; } } }
-        if (tgt) { db.mDir = tgt.x > db.x ? 1 : -1; db.vx += db.mDir * 120 / db.mass * dt; if (db.y > tgt.y + 30 && Math.random() < 4.8 * dt) db.flapDn(); }
+        if (tgt) {
+          db.mDir = tgt.x > db.x ? 1 : -1;
+          // Very gentle horizontal drift — slow-moving blobby menace
+          db.vx += db.mDir * 60 / db.mass * dt;
+          // Contract occasionally to burst down; more often when target is below
+          var below = db.y > tgt.y + 30;
+          var chance = below ? 1.6 * dt : 0.3 * dt;
+          if (db.contractT <= 0 && Math.random() < chance) db.flapDn();
+        }
       }
 
       // Update dismounted riders
@@ -2246,8 +2799,9 @@
 
       // Lava
       updateLava(dt);
+      updateImpactWaves(dt);
 
-      // Lava bubbles and eruptions
+      // Lava bubbles and eruption splashes (client-only visuals, no network sync needed)
       if (lavaH !== null && lavaH > 5) {
         var bubRate = 0.5 + wave * 0.3;
         if (Math.random() < bubRate * dt) {
@@ -2258,13 +2812,27 @@
           var lb = lavaBubbles[bi]; lb.y += 30 * dt; lb.r += 2 * dt; lb.life -= dt;
           if (lb.life <= 0) lavaBubbles.splice(bi, 1);
         }
-        var eruptRate = 0.05 + wave * 0.02;
+        // Lava splash eruptions — multi-particle bursts that arc up from the surface
+        var eruptRate = 0.15 + wave * 0.05;
         if (Math.random() < eruptRate * dt) {
           var ex = Math.random() * GW; var esh = getLavaHeightAt(ex) || lavaBaseH;
-          lavaEruptions.push({ x: ex, y: esh, vy: 300 + Math.random() * 300, life: 0.8 + Math.random() * 0.4 });
+          var numBlobs = 3 + Math.floor(Math.random() * 5);
+          for (var eb = 0; eb < numBlobs; eb++) {
+            var angle = (0.3 + Math.random() * 0.4) * Math.PI; // 50-130 degrees upward
+            var spd = 150 + Math.random() * 250;
+            lavaEruptions.push({
+              x: ex + (Math.random() - 0.5) * 10, y: esh,
+              vx: Math.cos(angle) * spd * (Math.random() < 0.5 ? 1 : -1),
+              vy: Math.sin(angle) * spd,
+              r: 2 + Math.random() * 3,
+              life: 0.6 + Math.random() * 0.6
+            });
+          }
         }
         for (var ei = lavaEruptions.length - 1; ei >= 0; ei--) {
-          var le = lavaEruptions[ei]; le.y += le.vy * dt; le.vy -= 500 * dt; le.life -= dt;
+          var le = lavaEruptions[ei];
+          le.x += (le.vx || 0) * dt;
+          le.y += le.vy * dt; le.vy -= 400 * dt; le.life -= dt;
           if (le.life <= 0) lavaEruptions.splice(ei, 1);
         }
       }
@@ -2292,7 +2860,8 @@
         aiBirds = aiBirds.filter(function (b) { return b.alive; });
         dBirds = dBirds.filter(function (b) { return b.alive; });
         dRiders = dRiders.filter(function (r) { return r.alive && !r.mounted; });
-        gameBirds = gameBirds.filter(function (b) { return (b.alive || b.resp) && b.peerId; });
+        // Keep bird if: (alive or respawning) AND (still owned by a player OR riderless-fleeing off screen)
+        gameBirds = gameBirds.filter(function (b) { return (b.alive || b.resp) && (b.peerId || b.aiMode === 'flee'); });
       }
 
       // Check if LOCAL player's rider was picked up -> back to bird mode
@@ -2336,7 +2905,7 @@
       }
 
       // Floating texts
-      for (var i = 0; i < fTexts.length; i++) { fTexts[i].y += 30 * dt; fTexts[i].life -= dt; }
+      for (var i = 0; i < fTexts.length; i++) { if (!fTexts[i].stat) fTexts[i].y += 30 * dt; fTexts[i].life -= dt; }
       fTexts = fTexts.filter(function (f) { return f.life > 0; });
 
       // Death bird spawning
@@ -2351,7 +2920,6 @@
     // HOST STATE BROADCAST
     // ============================================================
     var statesSent = 0, statesReceived = 0, inputsSent = 0, inputsReceived = 0;
-    var lastStateRecvTime = 0;
     var pendingSounds = []; // host queues sounds, broadcast with state, client plays them
     var pendingTexts = []; // host queues floating texts for client display
     function hostBroadcastState() {
@@ -2452,12 +3020,17 @@
         cfg = makeLevel(wave);
         // Rebuild platforms
         plats = cfg.platforms.map(function(p) { return new Plat(p.id, p.x, p.y, p.w, cfg.sf); });
-        // Re-init lava for new wave
-        lavaPeaks = []; lavaSources = []; lavaBaseH = 0; lavaBaseTarget = 0; lavaH = null;
-        lavaBubbles = []; lavaEruptions = [];
+        // Transition lava smoothly — deactivate old peaks/sources (they drift off)
+        // and add new ones, mirroring exactly what the host does in setupWave
+        deactivateOldLavaSources(wave);
         if (cfg.lava) {
-          lavaBaseH = cfg.lava.baseH; lavaBaseTarget = cfg.lava.baseH;
+          lavaBaseTarget = cfg.lava.baseH;
+          // Only snap on first wave or when starting from nothing
+          if (wave === 1 || lavaBaseH === 0) lavaBaseH = cfg.lava.baseH;
+          lavaH = lavaBaseH;
           addLavaSources(wave, cfg.lava.waves);
+        } else {
+          lavaBaseTarget = 0;
         }
         gameTime = msg.gameTime || 0; // sync gameTime on wave change for lava timing
         console.log('Client: wave changed ' + oldWave + ' -> ' + wave);
@@ -2491,18 +3064,44 @@
           if (bs.peerId === myPeerId) ctrlMode = 'bird';
         }
         newGameBirds.push(bird);
-        // Smooth correction for own bird, direct for others
-        if (bs.peerId === myPeerId) {
-          var dx = bird.x - bs.x, dy = bird.y - bs.y;
-          var dist = Math.hypot(dx, dy);
-          if (dist > 50) {
+        // Smooth correction: wrap-aware interpolation + steering offsets (ported from Xcode)
+        var pid = bs.peerId || ('b' + i);
+        var wDx = wrappedDeltaX(bird.x, bs.x);
+        var bDy = bs.y - bird.y;
+        var bDist = Math.hypot(wDx, bDy);
+        var isLocalBird = bs.peerId === myPeerId || (hasLocalPlayer2 && bs.peerId === localPlayer2PeerId);
+        var alpha = adaptiveBlendAlpha();
+        if (isLocalBird) {
+          // Local bird: steering offset correction (Xcode technique)
+          if (bDist > 100) {
+            // Hard snap — large error
             bird.x = bs.x; bird.y = bs.y; bird.vx = bs.vx; bird.vy = bs.vy;
-          } else if (dist > 5) {
-            bird.x += (bs.x - bird.x) * 0.3; bird.y += (bs.y - bird.y) * 0.3;
-            bird.vx += (bs.vx - bird.vx) * 0.3; bird.vy += (bs.vy - bird.vy) * 0.3;
+            steeringOffsets[pid] = { dx: 0, dy: 0 };
+            hardSnapTime[pid] = performance.now() / 1000;
+          } else if (bDist > 3) {
+            // Apply correction as steering offset that decays over frames
+            if (!steeringOffsets[pid]) steeringOffsets[pid] = { dx: 0, dy: 0 };
+            steeringOffsets[pid].dx += wDx * 0.2;
+            steeringOffsets[pid].dy += bDy * 0.2;
+            // Tiered velocity reconciliation (from Xcode)
+            var dvx = bs.vx - bird.vx, dvy = bs.vy - bird.vy;
+            if (Math.abs(dvx) > 200) bird.vx = bs.vx;
+            else if (Math.abs(dvx) > 50) bird.vx += dvx * 0.6;
+            else bird.vx += dvx * 0.35;
+            if (Math.abs(dvy) > 200) bird.vy = bs.vy;
+            else if (Math.abs(dvy) > 50) bird.vy += dvy * 0.6;
+            else bird.vy += dvy * 0.35;
           }
         } else {
-          bird.x = bs.x; bird.y = bs.y; bird.vx = bs.vx; bird.vy = bs.vy;
+          // Remote birds: wrap-aware interpolation with adaptive alpha
+          if (bDist > 150) {
+            bird.x = bs.x; bird.y = bs.y; bird.vx = bs.vx; bird.vy = bs.vy;
+            hardSnapTime[pid] = performance.now() / 1000;
+          } else {
+            bird.x = wrappedLerpX(bird.x, bs.x, alpha);
+            bird.y += bDy * alpha;
+            bird.vx = bs.vx; bird.vy = bs.vy;
+          }
         }
         bird.st = bs.st; bird.mDir = bs.mDir; bird.alive = bs.alive;
         bird.resp = bs.resp; bird.respT = bs.respT;
@@ -2512,11 +3111,15 @@
           bird.rider.ownerPeerId = bird.peerId;
           // If this is my bird getting a rider back, switch to bird mode
           if (bird.peerId === myPeerId) ctrlMode = 'bird';
+          if (hasLocalPlayer2 && bird.peerId === localPlayer2PeerId) ctrlMode2 = 'bird';
         }
         else if (!bs.hasRider && bird.rider) {
           // Host says rider was knocked off — switch to rider mode if it's my bird
           if (bird.peerId === myPeerId && ctrlMode === 'bird') {
             ctrlMode = 'rider';
+          }
+          if (hasLocalPlayer2 && bird.peerId === localPlayer2PeerId && ctrlMode2 === 'bird') {
+            ctrlMode2 = 'rider';
           }
           bird.rider = null;
         }
@@ -2557,9 +3160,11 @@
           aiBirds.push(ab);
         } else {
           var ab = aiBirds[i];
-          // Smooth blend position
-          ab.x += (as.x - ab.x) * 0.5; ab.y += (as.y - ab.y) * 0.5;
-          ab.vx += (as.vx - ab.vx) * 0.5; ab.vy += (as.vy - ab.vy) * 0.5;
+          // Smooth blend position (wrap-aware, adaptive alpha)
+          var aiAlpha = adaptiveBlendAlpha();
+          ab.x = wrappedLerpX(ab.x, as.x, aiAlpha);
+          ab.y += (as.y - ab.y) * aiAlpha;
+          ab.vx += (as.vx - ab.vx) * aiAlpha; ab.vy += (as.vy - ab.vy) * aiAlpha;
           ab.st = as.st; ab.mDir = as.mDir; ab.alive = as.alive; ab.aiMode = as.aiMode || ab.aiMode;
           if (as.hasRider && !ab.rider) { ab.rider = new Rider(false, ab.stam, ab.sf); ab.rider.mounted = true; }
           else if (!as.hasRider && ab.rider) { ab.rider = null; }
@@ -2576,8 +3181,9 @@
           dBirds.push(db);
         } else {
           var db = dBirds[i];
-          db.x += (ds.x - db.x) * 0.5; db.y += (ds.y - db.y) * 0.5;
-          db.vx += (ds.vx - db.vx) * 0.5; db.vy += (ds.vy - db.vy) * 0.5;
+          var dbAlpha = adaptiveBlendAlpha();
+          db.x = wrappedLerpX(db.x, ds.x, dbAlpha); db.y += (ds.y - db.y) * dbAlpha;
+          db.vx += (ds.vx - db.vx) * dbAlpha; db.vy += (ds.vy - db.vy) * dbAlpha;
           db.st = ds.st; db.mDir = ds.mDir; db.alive = ds.alive;
         }
       }
@@ -2597,10 +3203,19 @@
           }
         }
         if (existing) {
-          existing.x += (ds.x - existing.x) * 0.5;
-          existing.y += (ds.y - existing.y) * 0.5;
-          existing.vx = ds.vx || 0; existing.vy = ds.vy || 0;
-          existing.st = ds.st; existing.heat = ds.heat || 0;
+          // Don't override local player's own rider position — local prediction handles it
+          var isMyRider = existing.ownerPeerId === myPeerId && ctrlMode === 'rider';
+          if (isMyRider) {
+            // Only sync non-position state from host (heat, alive status)
+            existing.heat = ds.heat || 0;
+            existing.st = ds.st;
+          } else {
+            var drAlpha = adaptiveBlendAlpha();
+            existing.x = wrappedLerpX(existing.x, ds.x, drAlpha);
+            existing.y += (ds.y - existing.y) * drAlpha;
+            existing.vx = ds.vx || 0; existing.vy = ds.vy || 0;
+            existing.st = ds.st; existing.heat = ds.heat || 0;
+          }
           newDRiders.push(existing);
         } else {
           var nr = new Rider(ds.isP, 0.5, cfg ? cfg.sf : 1, ds.col || '#fff');
@@ -2666,6 +3281,20 @@
           flapEdge: flapEdge
         });
       }
+      // Player 2 input (local WASD)
+      if (hasLocalPlayer2) {
+        var keyStr2 = JSON.stringify(keys2) + (flapEdge2 ? '1' : '0');
+        var hasChange2 = keyStr2 !== lastSentKeys2;
+        if (hasChange2) lastSentKeys2 = keyStr2;
+        if (hasChange2 || inputSendTimer <= 0.001) {
+          broadcast({
+            type: 'input',
+            peerId: localPlayer2PeerId,
+            keys: { l: keys2.l, r: keys2.r, flap: keys2.flap, dn: keys2.dn },
+            flapEdge: flapEdge2
+          });
+        }
+      }
     }
 
     // ============================================================
@@ -2677,9 +3306,24 @@
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.save(); ctx.translate(oX, oY); ctx.scale(sc, sc);
 
-      // Title
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 48px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('JOUSTINE MULTIPLAYER', GW * 0.5, 50);
+      // Title: "JOUSTINE" + "WebRTC" (interactive)
+      ctx.font = 'bold 48px monospace'; ctx.textBaseline = 'middle';
+      var titleLeft = 'JOUSTINE ';
+      var titleRight = 'WebRTC';
+      var fullW = ctx.measureText(titleLeft + titleRight).width;
+      var startX = GW * 0.5 - fullW / 2;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(titleLeft, startX, 50);
+      var webrtcX = startX + ctx.measureText(titleLeft).width;
+      var webrtcW = ctx.measureText(titleRight).width;
+      ctx.fillStyle = webrtcHover ? '#0ff' : '#aaf';
+      ctx.fillText(titleRight, webrtcX, 50);
+      if (webrtcHover) {
+        ctx.fillRect(webrtcX, 50 + 20, webrtcW, 3);
+      }
+      // Store hit area for mouse/touch detection (game coords)
+      webrtcHitBox = { x: webrtcX, y: 50 - 24, w: webrtcW, h: 48 };
 
       // Level chooser (top center)
       var lvY = 110;
@@ -2801,8 +3445,7 @@
         var qrY = 180;
         // URL text above QR
         ctx.fillStyle = '#aaa'; ctx.font = '20px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-        var displayUrl = 'erd.mmec.ca/gm1/?room=' + (window._qrRoomCode || window._roomCode || '');
-        ctx.fillText(displayUrl, qrX + qrSize / 2, qrY - 10);
+        ctx.fillText('erd.mmec.ca/gm1/', qrX + qrSize / 2, qrY - 10);
         // Draw QR with white background
         ctx.fillStyle = '#fff';
         ctx.fillRect(qrX - 10, qrY - 10, qrSize + 20, qrSize + 20);
@@ -2833,6 +3476,33 @@
         ctx.fillText('STARTING...', GW / 2, GH / 2 + 80);
       }
 
+      // WebRTC tooltip overlay
+      if (webrtcTooltip) {
+        var ttW = 700, ttH = 340;
+        var ttX = (GW - ttW) / 2, ttY = 80;
+        ctx.fillStyle = 'rgba(0,0,20,0.92)';
+        ctx.beginPath();
+        var rr = 12;
+        ctx.moveTo(ttX + rr, ttY); ctx.lineTo(ttX + ttW - rr, ttY);
+        ctx.quadraticCurveTo(ttX + ttW, ttY, ttX + ttW, ttY + rr);
+        ctx.lineTo(ttX + ttW, ttY + ttH - rr);
+        ctx.quadraticCurveTo(ttX + ttW, ttY + ttH, ttX + ttW - rr, ttY + ttH);
+        ctx.lineTo(ttX + rr, ttY + ttH);
+        ctx.quadraticCurveTo(ttX, ttY + ttH, ttX, ttY + ttH - rr);
+        ctx.lineTo(ttX, ttY + rr);
+        ctx.quadraticCurveTo(ttX, ttY, ttX + rr, ttY);
+        ctx.fill();
+        ctx.strokeStyle = '#0ff'; ctx.lineWidth = 2; ctx.stroke();
+
+        ctx.fillStyle = '#fff'; ctx.font = '18px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+        var ttLines = wrapText(ctx, 'JOUSTINE WebRTC is an experiment to see if web browsers can provide twitch gaming if participants share a LAN. No JOUSTINE WebRTC gameplay makes any round-trip to a server, this is all peer-to-peer. One web browser participant serves as the host and provides ground-truth of gameplay. However all clients attempt to also update each other directly, to help improve client gaming fidelity. JOUSTINE WebRTC has ABSOLUTELY ZERO cross-compatibility with JOUSTINE APP, it is a stand-alone experiment so I could explore WebRTC performance and server load. (Server does help clients find each other... the one thing WebRTC does NOT do is discover other clients.)', ttW - 40);
+        for (var tli = 0; tli < ttLines.length; tli++) {
+          ctx.fillText(ttLines[tli], ttX + 20, ttY + 16 + tli * 24);
+        }
+        ctx.fillStyle = '#888'; ctx.font = '14px monospace'; ctx.textAlign = 'center';
+        ctx.fillText('tap anywhere to dismiss', GW / 2, ttY + ttH - 20);
+      }
+
       ctx.textAlign = 'right'; ctx.font = '16px monospace'; ctx.fillStyle = '#444'; ctx.textBaseline = 'top';
       ctx.fillText(BUILD, GW - 20, 10);
       ctx.restore();
@@ -2842,6 +3512,21 @@
     // RENDERING: GAME
     // ============================================================
     function toScr(gx, gy) { return { x: gx, y: GH - gy }; }
+
+    // Draw a bird (or rider) at its position AND a wrap-ghost on the opposite edge
+    // when partially off-screen so entities are never hidden at screen edges.
+    var WRAP_MARGIN = 60; // how far off-screen before ghost appears on other side
+    function drawBirdWrapped(bird, drawFn) {
+      drawFn(bird);
+      var ox = bird.x;
+      if (bird.x < WRAP_MARGIN) { bird.x += GW; drawFn(bird); bird.x = ox; }
+      else if (bird.x > GW - WRAP_MARGIN) { bird.x -= GW; drawFn(bird); bird.x = ox; }
+    }
+    function drawRiderWrapped(r, drawFn) {
+      var sp = toScr(r.x, r.y); drawFn(r, sp);
+      if (r.x < WRAP_MARGIN) { var sp2 = toScr(r.x + GW, r.y); drawFn(r, sp2); }
+      else if (r.x > GW - WRAP_MARGIN) { var sp2 = toScr(r.x - GW, r.y); drawFn(r, sp2); }
+    }
 
     function renderGame() {
       var scX = canvas.width / GW, scY = canvas.height / GH, sc = Math.min(scX, scY);
@@ -2892,6 +3577,7 @@
         for (var x = 0; x <= GW; x += 8) {
           var surfH = lavaBaseH;
           for (var pi = 0; pi < lavaPeaks.length; pi++) surfH += peakHeightAt(lavaPeaks[pi], x);
+          surfH += impactWaveHeightAt(x);
           ctx.lineTo(x, GH - surfH);
         }
         ctx.lineTo(GW, GH); ctx.closePath();
@@ -2906,10 +3592,14 @@
         }
         for (var ei = 0; ei < lavaEruptions.length; ei++) {
           var le = lavaEruptions[ei], les = toScr(le.x, le.y);
-          ctx.globalAlpha = Math.min(1, le.life * 2); ctx.fillStyle = '#ff6600';
-          ctx.beginPath(); ctx.arc(les.x, les.y, 3 + Math.random() * 2, 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = '#ffaa00';
-          ctx.beginPath(); ctx.arc(les.x + Math.random() * 4 - 2, les.y + Math.random() * 4 - 2, 2, 0, Math.PI * 2); ctx.fill();
+          var eAlpha = Math.min(1, le.life * 2.5);
+          ctx.globalAlpha = eAlpha;
+          // Outer glow
+          ctx.fillStyle = '#ff4400';
+          ctx.beginPath(); ctx.arc(les.x, les.y, (le.r || 3) + 1, 0, Math.PI * 2); ctx.fill();
+          // Bright core
+          ctx.fillStyle = '#ffcc00';
+          ctx.beginPath(); ctx.arc(les.x, les.y, (le.r || 3) * 0.6, 0, Math.PI * 2); ctx.fill();
           ctx.globalAlpha = 1;
         }
       }
@@ -2921,15 +3611,15 @@
         ctx.fillRect(sks.x - 1, sks.y - 1, 3, 3); ctx.globalAlpha = 1;
       }
 
-      // All birds (players + AI + death)
+      // All birds (players + AI + death) — draw with screen-wrap ghosts
       var renderBirds = allB;
       for (var i = 0; i < renderBirds.length; i++) {
         var bird = renderBirds[i]; if (!bird.alive) continue;
-        if (bird.resp) { if (Math.floor(bird.respT * 10) % 2 === 0) { ctx.globalAlpha = 0.5; drawBird(bird); ctx.globalAlpha = 1; } continue; }
-        drawBird(bird);
+        if (bird.resp) { if (Math.floor(bird.respT * 10) % 2 === 0) { ctx.globalAlpha = 0.5; drawBirdWrapped(bird, drawBird); ctx.globalAlpha = 1; } continue; }
+        drawBirdWrapped(bird, drawBird);
       }
 
-      // Dismounted riders
+      // Dismounted riders — draw with screen-wrap ghosts
       for (var i = 0; i < dRiders.length; i++) {
         var r = dRiders[i]; if (!r.alive || r.mounted) continue;
         // Smoke particles
@@ -2944,27 +3634,94 @@
           var blink = Math.sin(gameTime * 15) > 0;
           if (blink) { ctx.globalAlpha = 0.5; }
         }
-        drawRider(r, toScr(r.x, r.y));
+        drawRiderWrapped(r, drawRider);
         ctx.globalAlpha = 1;
       }
 
-      // Respawn indicators
+      // Respawn indicators — Xcode-style down arrow with phased flashing
       for (var bi = 0; bi < gameBirds.length; bi++) {
         var pb = gameBirds[bi];
         if (pb.resp) {
-          var rsp = toScr(pb.x, GH - 30);
-          ctx.fillStyle = pb.col; ctx.globalAlpha = 0.5 + 0.5 * Math.sin(gameTime * 8);
-          ctx.beginPath(); ctx.moveTo(rsp.x - 15, rsp.y - 10); ctx.lineTo(rsp.x + 15, rsp.y - 10); ctx.lineTo(rsp.x, rsp.y + 15); ctx.closePath(); ctx.fill();
-          ctx.font = '16px monospace'; ctx.textAlign = 'center'; ctx.fillText('FLAP TO DROP', rsp.x, rsp.y - 20);
-          ctx.globalAlpha = 1;
+          var sf = pb.sf || 1;
+          var arrH = 50 * sf, arrW = 30 * sf, stemW = 10 * sf, stemH = 20 * sf;
+          var rsp = toScr(pb.x, GH - 40);
+          var t = pb.respT;
+          var arrAlpha;
+          if (t < RESPAWN_T) {
+            // Phase 1: Lockout — steady 25% opacity, no flash
+            arrAlpha = 0.25;
+          } else {
+            // Phase 2: Can drop — flashing, speeding up, getting more opaque
+            var dropT = t - RESPAWN_T; // time since drop became available
+            var dropDur = RESPAWN_FORCE - RESPAWN_T; // total drop phase duration (5s)
+            var progress = Math.min(1.0, dropT / dropDur); // 0→1 over drop phase
+            // Flash frequency: starts at 2Hz (0.5s cycle), ramps to 30Hz
+            var freq = 2 + progress * 28;
+            // Opacity of visible phase: 0.75 → 0.99
+            var peakAlpha = 0.75 + progress * 0.24;
+            // Flash: sine wave, visible when positive
+            var flash = Math.sin(gameTime * freq * Math.PI * 2);
+            arrAlpha = flash > 0 ? peakAlpha : 0.08;
+          }
+          ctx.save(); ctx.translate(rsp.x, rsp.y); ctx.globalAlpha = arrAlpha;
+          // White outline
+          ctx.fillStyle = '#fff';
+          ctx.beginPath();
+          ctx.moveTo(-stemW / 2 - 1.5, -arrH / 2 - stemH - 1.5);
+          ctx.lineTo(stemW / 2 + 1.5, -arrH / 2 - stemH - 1.5);
+          ctx.lineTo(stemW / 2 + 1.5, -arrH / 2 + 1.5);
+          ctx.lineTo(arrW / 2 + 1.5, -arrH / 2 + 1.5);
+          ctx.lineTo(0, arrH / 2 + 1.5);
+          ctx.lineTo(-arrW / 2 - 1.5, -arrH / 2 + 1.5);
+          ctx.lineTo(-stemW / 2 - 1.5, -arrH / 2 + 1.5);
+          ctx.closePath(); ctx.fill();
+          // Arrow in player color
+          ctx.fillStyle = pb.col;
+          ctx.beginPath();
+          ctx.moveTo(-stemW / 2, -arrH / 2 - stemH);
+          ctx.lineTo(stemW / 2, -arrH / 2 - stemH);
+          ctx.lineTo(stemW / 2, -arrH / 2);
+          ctx.lineTo(arrW / 2, -arrH / 2);
+          ctx.lineTo(0, arrH / 2);
+          ctx.lineTo(-arrW / 2, -arrH / 2);
+          ctx.lineTo(-stemW / 2, -arrH / 2);
+          ctx.closePath(); ctx.fill();
+          ctx.globalAlpha = 1; ctx.restore();
         }
       }
 
       // Floating texts
+      // Game-over sequence:
+      //   0 → (LOCKOUT - FADE): GAME OVER / winner fully visible, "FLAP TO RETURN" invisible
+      //   (LOCKOUT - FADE) → LOCKOUT: GAME OVER fades out, "FLAP TO RETURN" fades in
+      //   After LOCKOUT: GAME OVER gone, "FLAP TO RETURN" fully visible (flap input now accepted)
+      var goOutAlpha = 1, flapInAlpha = 0;
+      if (lobbyState === 'gameover') {
+        var goE = (performance.now() / 1000) - gameOverTime;
+        var fadeStart = GAME_OVER_LOCKOUT - GAME_OVER_FADE;
+        if (goE < fadeStart) { goOutAlpha = 1; flapInAlpha = 0; }
+        else if (goE < GAME_OVER_LOCKOUT) {
+          var f = (goE - fadeStart) / GAME_OVER_FADE; // 0 → 1
+          goOutAlpha = 1 - f;
+          flapInAlpha = f;
+        } else { goOutAlpha = 0; flapInAlpha = 1; }
+      }
       for (var i = 0; i < fTexts.length; i++) {
         var ft = fTexts[i]; var sp = toScr(ft.x, ft.y);
-        ctx.globalAlpha = Math.min(1, ft.life);
-        ctx.fillStyle = '#fff'; ctx.font = 'bold 32px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        var baseA = Math.min(1, ft.life);
+        var useA = baseA;
+        if (lobbyState === 'gameover') {
+          if (ft.go === 'prompt') useA = flapInAlpha;
+          else if (ft.go === 'main') useA = goOutAlpha;
+          else useA = goOutAlpha; // any other static gameover text fades with main
+        }
+        if (useA <= 0.001) continue;
+        ctx.globalAlpha = useA;
+        var ftSize = ft.size || 28;
+        ctx.fillStyle = ft.col || '#fff'; ctx.font = 'bold ' + ftSize + 'px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        // White outline for readability
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = Math.max(3, ftSize / 10);
+        ctx.strokeText(ft.text, sp.x, sp.y);
         ctx.fillText(ft.text, sp.x, sp.y); ctx.globalAlpha = 1;
       }
 
@@ -2978,52 +3735,75 @@
         ctx.globalAlpha = 1;
       }
 
-      // HUD - per player lives display
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 28px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText('Wave ' + wave, 20, 20);
-      // Per-player score and lives
-      var hudY = 55;
+      // HUD - Xcode-style: players evenly spread across top
+      // Collect active players
+      var hudPlayers = [];
       for (var pi = 0; pi < gameBirds.length; pi++) {
         var pb = gameBirds[pi];
         if (!pb.peerId) continue;
-        var pLv = playerLives[pb.peerId] || 0;
-        var pSc = playerScores[pb.peerId] || 0;
-        var pCol = pb.origCol || pb.col || '#fff';
-        var pName = pb.peerId.slice(0, 4);
-        var isMe = pb.peerId === myPeerId;
-        // Player name + score
-        ctx.fillStyle = pCol; ctx.font = (isMe ? 'bold ' : '') + '22px monospace';
-        ctx.fillText(pName + ': ' + pSc, 20, hudY);
-        // Lives as bird icons in player color
-        for (var li = 0; li < pLv; li++) {
-          var lx = 200 + li * 22;
-          ctx.fillStyle = pCol; ctx.beginPath(); ctx.ellipse(lx, hudY + 10, 7, 4, 0, 0, Math.PI * 2); ctx.fill();
-        }
-        if (pLv <= 0 && !(pb.alive || pb.resp)) {
-          ctx.fillStyle = '#f44'; ctx.font = '16px monospace'; ctx.fillText('OUT', 200, hudY + 2);
-        }
-        hudY += 28;
+        hudPlayers.push(pb);
       }
-      ctx.fillStyle = '#888'; ctx.font = '16px monospace';
-      ctx.fillText(isHost ? 'HOST' : 'Client', 20, hudY);
-
-      // Enemy count
+      var nPlayers = hudPlayers.length;
+      var topMargin = 12;
+      // Draw each player's HUD column
+      for (var hi = 0; hi < nPlayers; hi++) {
+        var hb = hudPlayers[hi];
+        var pid = hb.peerId;
+        var pLv = playerLives[pid] || 0;
+        var pSc = playerScores[pid] || 0;
+        var pCol = hb.origCol || hb.col || '#fff';
+        var isMe = pid === myPeerId || pid === localPlayer2PeerId;
+        var xFrac = (hi + 1) / (nPlayers + 1);
+        var hx = GW * xFrac;
+        // Extra life flash — decay (use rAF-style delta since render runs once per frame)
+        if (playerExtraFlash[pid] > 0) playerExtraFlash[pid] -= 1 / 60;
+        var flashActive = playerExtraFlash[pid] > 0;
+        // Lives as bird icons (show lives-1, since current bird counts as one)
+        var showLives = Math.max(0, pLv - 1);
+        var iconW = 16, iconH = 10, iconGap = 5;
+        var totalIconW = showLives * (iconW + iconGap) - (showLives > 0 ? iconGap : 0);
+        var iconStartX = hx - totalIconW / 2;
+        for (var li = 0; li < showLives; li++) {
+          var lx = iconStartX + li * (iconW + iconGap) + iconW / 2;
+          var ly = topMargin + iconH / 2;
+          // White outline behind icon
+          ctx.fillStyle = flashActive ? '#fff' : 'rgba(255,255,255,0.3)';
+          ctx.beginPath(); ctx.ellipse(lx, ly, iconW / 2 + 1.5, iconH / 2 + 1, 0, 0, Math.PI * 2); ctx.fill();
+          // Bird icon in player color
+          ctx.fillStyle = flashActive ? '#fff' : pCol;
+          ctx.beginPath(); ctx.ellipse(lx, ly, iconW / 2, iconH / 2, 0, 0, Math.PI * 2); ctx.fill();
+        }
+        if (pLv <= 0 && !(hb.alive || hb.resp)) {
+          ctx.fillStyle = '#f44'; ctx.font = 'bold 16px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+          ctx.fillText('OUT', hx, topMargin);
+        }
+        // Score below lives
+        var scoreY = topMargin + iconH + 6;
+        ctx.fillStyle = flashActive ? '#fff' : pCol;
+        ctx.font = (isMe ? 'bold ' : '') + '28px monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillText(formatScore(pSc), hx, scoreY);
+      }
+      // Wave number — centered, below scores
+      ctx.fillStyle = '#888'; ctx.font = '16px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('W' + wave, 8, 8);
+      // Enemy count — top right
       var enemies = aiBirds.filter(function (b) { return b.alive && b.rider && b.rider.alive; }).length;
       var dismEnemies = dRiders.filter(function (r) { return r.alive && !r.isP; }).length;
-      ctx.fillStyle = '#f88'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'right';
-      ctx.fillText('Enemies: ' + (enemies + dismEnemies), GW - 20, 55);
-
+      var totalEnemies = enemies + dismEnemies;
+      if (totalEnemies > 0) {
+        ctx.fillStyle = '#f88'; ctx.font = '16px monospace'; ctx.textAlign = 'right';
+        ctx.fillText(totalEnemies + ' left', GW - 8, 8);
+      }
       // Kill streak display
       if (killStreak > 1 && streakTimer > 0) {
-        ctx.fillStyle = '#ff0'; ctx.font = 'bold 24px monospace'; ctx.textAlign = 'center';
-        ctx.fillText(killStreak + 'x STREAK', GW / 2, 30);
+        ctx.fillStyle = '#ff0'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(killStreak + 'x STREAK', GW / 2, 50);
       }
-
       // Dismounted notice
-      if (ctrlMode === 'rider') { ctx.fillStyle = '#ff0'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'left'; ctx.fillText('DISMOUNTED - find a bird!', 20, 165); }
+      if (ctrlMode === 'rider') { ctx.fillStyle = '#ff0'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center'; ctx.fillText('DISMOUNTED - find a bird!', GW / 2, GH * 0.88); }
 
       // (player name labels above birds removed — color is self-evident)
-      }
 
       ctx.textAlign = 'right'; ctx.font = '16px monospace'; ctx.fillStyle = '#444'; ctx.textBaseline = 'top';
       ctx.fillText(BUILD, GW - 20, 10);
@@ -3112,12 +3892,161 @@
       }
     }
 
+    // Popped pufferball — deflating balloon with a jagged hole on the side the rider pierced.
+    // Fling direction is encoded by bird.vx sign; hole is on the OPPOSITE side (point of impact).
+    function drawPufferballPopped(bird, sp, r) {
+      var flingSign = bird.vx >= 0 ? 1 : -1;
+      var t = bird.dyingT || 0;
+      // Deflation: shrinks along horizontal (fling axis), wobbles vertical
+      var shrink = Math.max(0.25, 1 - t * 0.9);
+      var wobble = 1 + 0.12 * Math.sin(t * 40);
+      var rx = r * shrink;
+      var ry = r * (0.7 + 0.3 * wobble) * (0.7 + 0.3 * shrink);
+      ctx.save(); ctx.translate(sp.x, sp.y);
+
+      // Trailing air stream (behind the fling direction)
+      ctx.fillStyle = 'rgba(255,255,255,' + Math.max(0, 0.4 - t * 0.12) + ')';
+      for (var ai = 0; ai < 6; ai++) {
+        var trailDist = (ai + 1) * r * 0.35;
+        var trailX = -flingSign * trailDist;
+        var trailY = (Math.random() - 0.5) * r * 0.4;
+        var trailR = r * 0.18 * (1 - ai / 6);
+        ctx.beginPath(); ctx.arc(trailX, trailY, trailR, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // Deflated body (squished along fling axis)
+      var bodyGrad = ctx.createRadialGradient(-rx * 0.3 * flingSign, -ry * 0.3, rx * 0.1, 0, 0, Math.max(rx, ry));
+      bodyGrad.addColorStop(0, '#6b1010');
+      bodyGrad.addColorStop(1, '#1a0000');
+      ctx.fillStyle = bodyGrad;
+      // Draw torn/ragged silhouette: main body + a jagged hole opposite fling direction
+      var holeAngle = flingSign > 0 ? Math.PI : 0; // hole on the opposite side of fling
+      ctx.beginPath();
+      var segs = 24;
+      for (var si = 0; si <= segs; si++) {
+        var a = si / segs * Math.PI * 2;
+        var da = ((a - holeAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+        var nearHole = Math.abs(da) < 0.8;
+        var radX = rx * (nearHole ? (0.35 + 0.25 * Math.abs(da) / 0.8) : 1);
+        var radY = ry * (nearHole ? (0.35 + 0.25 * Math.abs(da) / 0.8) : 1);
+        // Ragged edge noise
+        var jag = 1 + (Math.sin(si * 3.7 + t * 10) * 0.08);
+        var px = Math.cos(a) * radX * jag;
+        var py = Math.sin(a) * radY * jag;
+        if (si === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 2; ctx.stroke();
+
+      // Shredded flaps near the hole
+      ctx.strokeStyle = '#3b0a0a'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      for (var fi = 0; fi < 5; fi++) {
+        var fa = holeAngle + (fi - 2) * 0.35;
+        var fx = Math.cos(fa) * rx * 0.5;
+        var fy = Math.sin(fa) * ry * 0.5;
+        var fx2 = Math.cos(fa) * rx * (0.95 + 0.1 * Math.sin(t * 30 + fi));
+        var fy2 = Math.sin(fa) * ry * (0.95 + 0.1 * Math.sin(t * 30 + fi));
+        ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(fx2, fy2); ctx.stroke();
+      }
+
+      // X-eyes (dead)
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 2.5;
+      var exR = rx * 0.1;
+      var eyeY = -ry * 0.15;
+      [-rx * 0.25, rx * 0.25].forEach(function (ex) {
+        ctx.beginPath(); ctx.moveTo(ex - exR, eyeY - exR); ctx.lineTo(ex + exR, eyeY + exR); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(ex - exR, eyeY + exR); ctx.lineTo(ex + exR, eyeY - exR); ctx.stroke();
+      });
+
+      ctx.restore();
+    }
+
+    // Pufferball: deep-red fluffy orb, inflates/deflates on breath cycle, squishes small during contraction (burst-down)
+    function drawPufferball(bird, sp) {
+      var r = Math.max(bird.w, bird.h) * 0.5;
+      // Dying/popped state — ripped open, deflating balloon rocketing offscreen
+      if (bird.dying) {
+        drawPufferballPopped(bird, sp, r);
+        return;
+      }
+      // Contraction scale: 1.0 at rest → ~0.65 while contracted
+      var ctr = bird.contractT > 0 ? (bird.contractT / 0.35) : 0;
+      var breath = 1 + 0.05 * Math.sin((gameTime * 2) + (bird.puffPhase || 0));
+      var scale = breath * (1 - 0.35 * ctr);
+      var rr = r * scale;
+      ctx.save(); ctx.translate(sp.x, sp.y);
+
+      // Outer soft halo (dark red glow)
+      var g = ctx.createRadialGradient(0, 0, rr * 0.2, 0, 0, rr * 1.4);
+      g.addColorStop(0, 'rgba(160,20,20,0.6)');
+      g.addColorStop(1, 'rgba(80,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(0, 0, rr * 1.4, 0, Math.PI * 2); ctx.fill();
+
+      // Fluffy puff-bumps around rim — 12 overlapping circles for cloud-like silhouette
+      ctx.fillStyle = '#3b0a0a';
+      var puffs = 12;
+      for (var i = 0; i < puffs; i++) {
+        var a = i * Math.PI * 2 / puffs + (bird.puffPhase || 0) * 0.1;
+        var pr = rr * 0.42 * (0.9 + 0.1 * Math.sin(gameTime * 3 + i));
+        var px = Math.cos(a) * rr * 0.78;
+        var py = Math.sin(a) * rr * 0.78;
+        ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // Main body sphere
+      var bodyGrad = ctx.createRadialGradient(-rr * 0.3, -rr * 0.3, rr * 0.1, 0, 0, rr);
+      bodyGrad.addColorStop(0, '#8b1a1a');
+      bodyGrad.addColorStop(1, '#2a0505');
+      ctx.fillStyle = bodyGrad;
+      ctx.beginPath(); ctx.arc(0, 0, rr * 0.88, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+      // Mouth: round "O" when contracting (blowing air out); small slit when idle
+      if (ctr > 0.15) {
+        var mouthR = rr * (0.14 + 0.12 * ctr);
+        ctx.fillStyle = '#000';
+        ctx.beginPath(); ctx.arc(0, rr * 0.15, mouthR, 0, Math.PI * 2); ctx.fill();
+        // Puff of air above the pufferball when contracting (air is shot upward)
+        ctx.fillStyle = 'rgba(255,255,255,' + (0.5 * ctr) + ')';
+        for (var pi = 0; pi < 5; pi++) {
+          var paX = (Math.random() - 0.5) * rr * 0.6;
+          var paY = -rr * (1.1 + Math.random() * 0.6 + ctr * 0.3);
+          var paR = rr * 0.15 * (0.6 + Math.random() * 0.6);
+          ctx.beginPath(); ctx.arc(paX, paY, paR, 0, Math.PI * 2); ctx.fill();
+        }
+      } else {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(-rr * 0.08, rr * 0.10, rr * 0.16, rr * 0.05);
+      }
+
+      // Eyes (two small dark dots, angry brow)
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(-rr * 0.25, -rr * 0.15, rr * 0.12, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(rr * 0.25, -rr * 0.15, rr * 0.12, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.beginPath(); ctx.arc(-rr * 0.22, -rr * 0.13, rr * 0.06, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(rr * 0.28, -rr * 0.13, rr * 0.06, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-rr * 0.4, -rr * 0.32); ctx.lineTo(-rr * 0.1, -rr * 0.22); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(rr * 0.4, -rr * 0.32); ctx.lineTo(rr * 0.1, -rr * 0.22); ctx.stroke();
+
+      ctx.restore();
+    }
+
     function drawBird(bird) {
       var sp = toScr(bird.x, bird.y);
       var bw = bird.w, bh = bird.h;
       var facing = bird.vx < -10 ? -1 : bird.vx > 10 ? 1 : (bird.mDir || 1);
       var drawCol = bird.col;
       if (bird.type === 'player' && flashTimer > 0) { drawCol = 'rgba(255,255,255,' + (flashTimer / 0.9) + ')'; }
+
+      // DeathBird — rendered as a "pufferball"
+      if (bird.type === 'death') {
+        drawPufferball(bird, sp);
+        return;
+      }
 
       // Speed trail
       if (bird.trail.length > 1) {
@@ -3195,20 +4124,7 @@
       ctx.beginPath(); ctx.ellipse(0, 0, bodyW / 2, bodyH / 2, 0, 0, Math.PI * 2);
       ctx.fillStyle = drawCol; ctx.fill(); ctx.strokeStyle = '#00000040'; ctx.lineWidth = 1.5; ctx.stroke();
 
-      // Death bird spikes
-      if (bird.type === 'death') {
-        ctx.strokeStyle = '#660000'; ctx.lineWidth = 2;
-        for (var si = 0; si < 16; si++) {
-          var sa = si * Math.PI * 2 / 16, sLen = bw * 0.25;
-          ctx.beginPath(); ctx.moveTo(Math.cos(sa) * bodyW / 2 * 0.9, Math.sin(sa) * bodyH / 2 * 0.9);
-          ctx.lineTo(Math.cos(sa) * (bodyW / 2 + sLen), Math.sin(sa) * (bodyH / 2 + sLen * 0.6)); ctx.stroke();
-        }
-        ctx.beginPath(); ctx.arc(-bodyW * 0.15, -bodyH * 0.1, bw * 0.12, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
-        ctx.beginPath(); ctx.arc(-bodyW * 0.12, -bodyH * 0.1, bw * 0.06, 0, Math.PI * 2); ctx.fillStyle = '#000'; ctx.fill();
-        ctx.beginPath(); ctx.arc(bodyW * 0.15, -bodyH * 0.1, bw * 0.12, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
-        ctx.beginPath(); ctx.arc(bodyW * 0.18, -bodyH * 0.1, bw * 0.06, 0, Math.PI * 2); ctx.fillStyle = '#000'; ctx.fill();
-        ctx.beginPath(); ctx.arc(0, bodyH * 0.05, bw * 0.08, 0, Math.PI); ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.stroke();
-      }
+      // (DeathBird rendering handled by drawPufferball — see early-return above)
 
       // 4. Head + beak (in front of everything, offset horizontally by headLean)
       var headR = bw * 0.15, headY = -(bodyH * 0.3);
@@ -3218,9 +4134,10 @@
       ctx.save(); ctx.translate(headOffX, headY);
       ctx.beginPath(); ctx.arc(0, 0, headR, 0, Math.PI * 2); ctx.fillStyle = drawCol; ctx.fill();
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke();
-      var bs = headR * 0.45;
+      var bs = headR * 0.5;
       ctx.beginPath(); ctx.moveTo(-bs * 0.3, headR * 0.5); ctx.lineTo(bs * 0.3, headR * 0.5); ctx.lineTo(0, headR * 0.5 + bs * 0.7); ctx.closePath();
       ctx.fillStyle = '#d4a020'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 0.8; ctx.stroke();
       ctx.restore();
 
       // Legs (walking)
@@ -3243,14 +4160,64 @@
     function drawRider(rider, sp) {
       ctx.save(); ctx.translate(sp.x, sp.y);
       var fh = rider.figH, headR = fh * 0.18, lw = Math.max(1.5, rider.w * 0.12);
+      var olw = lw + Math.max(2, rider.w * 0.1); // outline width (Xcode-style)
+      var armLen = fh * 0.28; // bigger arms
+      // Check if a player bird is close above — rider waves arms frantically
+      var playerBirdNearAbove = false;
+      for (var pbi = 0; pbi < gameBirds.length; pbi++) {
+        var pb = gameBirds[pbi];
+        if (!pb.alive || pb.resp) continue;
+        var dx = Math.abs(pb.x - rider.x), dy = pb.y - rider.y;
+        if (dx < 120 && dy > 0 && dy < 200) { playerBirdNearAbove = true; break; }
+      }
+      // Outline pass — white behind all limbs for visibility
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = olw; ctx.lineCap = 'round';
+      // Outline body
+      ctx.beginPath(); ctx.moveTo(0, -fh * 0.4 + headR); ctx.lineTo(0, 0); ctx.stroke();
+      // Head
       ctx.beginPath(); ctx.arc(0, -fh * 0.4, headR, 0, Math.PI * 2); ctx.fillStyle = rider.col; ctx.fill();
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, -fh * 0.4 + headR); ctx.lineTo(0, 0); ctx.strokeStyle = rider.col; ctx.lineWidth = lw; ctx.stroke();
-      var aa = rider.st === 'fall' ? Math.sin(gameTime * 18) * 0.3 : 0;
-      ctx.beginPath(); ctx.moveTo(-fh * 0.14, -fh * 0.2 + Math.sin(gameTime * 12 + aa) * 3); ctx.lineTo(0, -fh * 0.25);
-      ctx.lineTo(fh * 0.14, -fh * 0.2 + Math.sin(gameTime * 12 + 1 + aa) * 3); ctx.stroke();
-      var ls = rider.st === 'walk' ? Math.sin(gameTime * 9) * fh * 0.1 : fh * 0.05;
-      ctx.beginPath(); ctx.moveTo(-ls, fh * 0.3); ctx.lineTo(0, 0); ctx.lineTo(ls, fh * 0.3); ctx.stroke();
+      // Body
+      ctx.beginPath(); ctx.moveTo(0, -fh * 0.4 + headR); ctx.lineTo(0, 0); ctx.strokeStyle = rider.col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.stroke();
+      // Arms
+      if (playerBirdNearAbove && rider.st !== 'fall') {
+        // Waving: arms reach up and wave frantically
+        var waveL = Math.sin(gameTime * 16) * 0.5;
+        var waveR = Math.sin(gameTime * 16 + 2.0) * 0.5;
+        var shoulderY = -fh * 0.25;
+        ctx.beginPath();
+        ctx.moveTo(-armLen * 0.6, shoulderY - armLen * 0.8 + waveL * armLen * 0.4);
+        ctx.lineTo(0, shoulderY);
+        ctx.lineTo(armLen * 0.6, shoulderY - armLen * 0.8 + waveR * armLen * 0.4);
+        ctx.stroke();
+      } else if (rider.st === 'fall') {
+        // Airborne: arms flail
+        ctx.beginPath();
+        ctx.moveTo(-armLen * 0.7, -fh * 0.35 + Math.sin(gameTime * 14) * 6);
+        ctx.lineTo(0, -fh * 0.25);
+        ctx.lineTo(armLen * 0.7, -fh * 0.35 + Math.sin(gameTime * 14 + 1.5) * 6);
+        ctx.stroke();
+      } else {
+        // Walking/idle: arms at sides, gentle sway only when moving
+        var armSwing = Math.abs(rider.vx) > 8 ? Math.sin(gameTime * 9) * 0.08 : 0;
+        ctx.beginPath();
+        ctx.moveTo(-armLen * 0.5, -fh * 0.12 + armSwing * fh);
+        ctx.lineTo(0, -fh * 0.25);
+        ctx.lineTo(armLen * 0.5, -fh * 0.12 - armSwing * fh);
+        ctx.stroke();
+      }
+      // Legs
+      if (rider.st === 'walk' && Math.abs(rider.vx) > 8) {
+        // Walking: legs swing based on speed
+        var ls = Math.sin(gameTime * 9) * fh * 0.12;
+        ctx.beginPath(); ctx.moveTo(-ls, fh * 0.3); ctx.lineTo(0, 0); ctx.lineTo(ls, fh * 0.3); ctx.stroke();
+      } else if (rider.st === 'fall') {
+        // Airborne: legs spread
+        ctx.beginPath(); ctx.moveTo(-fh * 0.08, fh * 0.3); ctx.lineTo(0, 0); ctx.lineTo(fh * 0.08, fh * 0.3); ctx.stroke();
+      } else {
+        // Idle/standing: legs together, slight stance
+        ctx.beginPath(); ctx.moveTo(-fh * 0.04, fh * 0.3); ctx.lineTo(0, 0); ctx.lineTo(fh * 0.04, fh * 0.3); ctx.stroke();
+      }
       ctx.restore();
     }
 
@@ -3262,39 +4229,84 @@
       if (lobbyState === 'lobby' || lobbyState === 'countdown') {
         if (e.key === 'ArrowLeft') { changeLevel(-1); e.preventDefault(); return; }
         if (e.key === 'ArrowRight') { changeLevel(1); e.preventDefault(); return; }
-        if (e.key === ' ' || e.key === 'ArrowUp') {
-          startHold();
+        // Either "up" key claims P1 first time, then the OTHER "up" claims P2
+        if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+          var side = (e.key === 'w' || e.key === 'W') ? 'wasd' : 'arrows';
+          if (mySlotIndex < 0) {
+            // No P1 yet — this side claims P1
+            p1Side = side;
+            startHold();
+          } else if (side === p1Side || !p1Side) {
+            // Same side as P1 — hold for P1
+            if (!p1Side) p1Side = side;
+            startHold();
+          } else {
+            // Other side — this is P2 (only claims slot when hold completes)
+            startHoldP2();
+          }
           e.preventDefault();
           return;
         }
       }
       if (lobbyState === 'gameover') {
+        // 5-second input lockout after game ends — avoids accidental dismissal
+        if (performance.now() / 1000 - gameOverTime < GAME_OVER_LOCKOUT) { e.preventDefault(); return; }
         lobbyState = 'lobby'; mySlotIndex = -1; cfg = null;
+        hasLocalPlayer2 = false; localPlayer2PeerId = null; localPlayer2SlotIndex = -1;
+        ctrlMode2 = 'bird'; p1Side = null;
         for (var si = 0; si < 12; si++) { slots[si].peerId = null; slots[si].ready = false; slots[si].progress = 0; slots[si].holding = false; }
         gameBirds = []; aiBirds = []; dBirds = []; dRiders = []; fTexts = [];
         e.preventDefault(); return;
       }
       if (lobbyState === 'game') {
-        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.l = true;
-        if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.r = true;
-        if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') { if (!keys.flap) flapEdge = true; keys.flap = true; }
-        if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') keys.dn = true;
+        // ESC or backtick: host quits game for everyone
+        if (e.key === 'Escape' || e.key === '`') {
+          if (isHost) {
+            // End game immediately — broadcast quit to all
+            lobbyState = 'gameover';
+            fTexts.push({ text: 'GAME ENDED', x: GW / 2, y: GH * 0.7, life: 999 });
+            fTexts.push({ text: 'Tap to return to lobby', x: GW / 2, y: GH * 0.4, life: 999 });
+            broadcast({ type: 'gameover', wave: wave, winnerPid: null, winnerName: 'Nobody', pScores: playerScores, quit: true });
+          }
+          e.preventDefault(); return;
+        }
+        // Route arrow keys and WASD to P1/P2 based on which side claimed P1
+        var isWasd = (e.key === 'a' || e.key === 'A' || e.key === 'd' || e.key === 'D' || e.key === 'w' || e.key === 'W' || e.key === 's' || e.key === 'S');
+        var isArrow = (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === ' ');
+        var isP1Key = (isArrow && p1Side !== 'wasd') || (isWasd && p1Side === 'wasd');
+        var isP2Key = hasLocalPlayer2 && ((isWasd && p1Side !== 'wasd') || (isArrow && p1Side === 'wasd'));
+        var k = isP2Key ? keys2 : keys;
+        var fe = isP2Key ? flapEdge2 : flapEdge;
+        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') k.l = true;
+        if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') k.r = true;
+        if (e.key === 'ArrowUp' || e.key === ' ' || e.key === 'w' || e.key === 'W') {
+          if (!k.flap) { if (isP2Key) flapEdge2 = true; else flapEdge = true; }
+          k.flap = true;
+        }
+        if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') k.dn = true;
       }
       e.preventDefault();
     });
 
     window.addEventListener('keyup', function (e) {
       if (lobbyState === 'lobby' || lobbyState === 'countdown') {
-        if (e.key === ' ' || e.key === 'ArrowUp') {
-          releaseHold();
+        if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+          var side2 = (e.key === 'w' || e.key === 'W') ? 'wasd' : 'arrows';
+          if (side2 === p1Side) releaseHold();
+          else if (hasLocalPlayer2) releaseHoldP2();
+          else releaseHold(); // fallback if p1Side not yet set
           return;
         }
       }
       if (lobbyState === 'game') {
-        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.l = false;
-        if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.r = false;
-        if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') keys.flap = false;
-        if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') keys.dn = false;
+        var isWasd2 = (e.key === 'a' || e.key === 'A' || e.key === 'd' || e.key === 'D' || e.key === 'w' || e.key === 'W' || e.key === 's' || e.key === 'S');
+        var isArrow2 = (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === ' ');
+        var isP2Up = hasLocalPlayer2 && ((isWasd2 && p1Side !== 'wasd') || (isArrow2 && p1Side === 'wasd'));
+        var ku = isP2Up ? keys2 : keys;
+        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') ku.l = false;
+        if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') ku.r = false;
+        if (e.key === 'ArrowUp' || e.key === ' ' || e.key === 'w' || e.key === 'W') ku.flap = false;
+        if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') ku.dn = false;
       }
     });
 
@@ -3339,11 +4351,15 @@
     canvas.addEventListener('touchstart', function (e) {
       e.preventDefault(); initAudio();
       if (lobbyState === 'lobby' || lobbyState === 'countdown') {
+        // Dismiss tooltip on any touch
+        if (webrtcTooltip) { webrtcTooltip = false; return; }
         var scX = canvas.width / GW, scY = canvas.height / GH, sc = Math.min(scX, scY);
         var oX = (canvas.width - GW * sc) / 2, oY = (canvas.height - GH * sc) / 2;
         for (var ti = 0; ti < e.touches.length; ti++) {
           var tx = (e.touches[ti].clientX - oX) / sc;
           var ty = (e.touches[ti].clientY - oY) / sc;
+          // Tap on "WebRTC" title text → show tooltip
+          if (isInWebrtcHit(tx, ty)) { webrtcTooltip = true; return; }
           // Level left arrow area
           if (tx > GW * 0.3 && tx < GW * 0.4 && ty > 80 && ty < 140) { changeLevel(-1); return; }
           // Level right arrow area
@@ -3355,6 +4371,8 @@
         return;
       }
       if (lobbyState === 'gameover') {
+        // 5-second input lockout after game ends
+        if (performance.now() / 1000 - gameOverTime < GAME_OVER_LOCKOUT) return;
         // Return to lobby
         lobbyState = 'lobby'; mySlotIndex = -1; cfg = null;
         for (var si = 0; si < 12; si++) { slots[si].peerId = null; slots[si].ready = false; slots[si].progress = 0; slots[si].holding = false; }
@@ -3383,6 +4401,46 @@
       }
     });
 
+    // Helper: convert client (CSS) coords to game coords
+    function clientToGame(cx, cy) {
+      var rect = canvas.getBoundingClientRect();
+      // Convert CSS coords to canvas pixel coords
+      var px = (cx - rect.left) * (canvas.width / rect.width);
+      var py = (cy - rect.top) * (canvas.height / rect.height);
+      // Then canvas pixels to game coords (same transform as renderLobby)
+      var scX = canvas.width / GW, scY = canvas.height / GH, sc = Math.min(scX, scY);
+      var oX = (canvas.width - GW * sc) / 2, oY = (canvas.height - GH * sc) / 2;
+      return { x: (px - oX) / sc, y: (py - oY) / sc };
+    }
+    function isInWebrtcHit(gx, gy) {
+      if (!webrtcHitBox) return false;
+      var b = webrtcHitBox;
+      return gx >= b.x && gx <= b.x + b.w && gy >= b.y && gy <= b.y + b.h;
+    }
+
+    // Mouse: hover detection for WebRTC title text
+    canvas.addEventListener('mousemove', function (e) {
+      if (lobbyState !== 'lobby' && lobbyState !== 'countdown') { webrtcHover = false; webrtcTooltip = false; canvas.style.cursor = ''; return; }
+      var g = clientToGame(e.clientX, e.clientY);
+      var hit = isInWebrtcHit(g.x, g.y);
+      webrtcHover = hit;
+      // Desktop: hovering over "WebRTC" text shows the tooltip; moving off hides it.
+      webrtcTooltip = hit;
+      canvas.style.cursor = hit ? 'pointer' : '';
+    });
+    canvas.addEventListener('mouseleave', function () {
+      webrtcHover = false; webrtcTooltip = false; canvas.style.cursor = '';
+    });
+
+    // Click: open Wikipedia on desktop if clicking WebRTC text
+    canvas.addEventListener('click', function (e) {
+      if (lobbyState !== 'lobby' && lobbyState !== 'countdown') return;
+      var g = clientToGame(e.clientX, e.clientY);
+      if (isInWebrtcHit(g.x, g.y)) {
+        window.open('https://en.wikipedia.org/wiki/WebRTC', '_blank');
+      }
+    });
+
     // ============================================================
     // CANVAS RESIZE
     // ============================================================
@@ -3400,10 +4458,12 @@
 
       if (lobbyState === 'lobby') {
         updateHold();
+        updateHoldP2();
         renderLobby();
       }
       else if (lobbyState === 'countdown') {
         updateHold();
+        updateHoldP2();
         updateCountdown(dt);
         renderLobby();
       }
@@ -3429,6 +4489,17 @@
           // Non-host: run FULL game engine locally for responsiveness
           // Host state corrections are applied smoothly via applyHostState
           gameStep(dt);
+          // Apply steering offsets with exponential decay (ported from Xcode)
+          for (var si2 = 0; si2 < gameBirds.length; si2++) {
+            var sb = gameBirds[si2];
+            var spid = sb.peerId || ('b' + si2);
+            var so = steeringOffsets[spid];
+            if (so && (Math.abs(so.dx) > 0.5 || Math.abs(so.dy) > 0.5)) {
+              sb.x += so.dx * dt * 8;
+              sb.y += so.dy * dt * 8;
+              so.dx *= 0.88; so.dy *= 0.88; // decay ~5 frame half-life
+            }
+          }
         }
 
         renderGame();
@@ -3440,10 +4511,11 @@
         // Observer: update lava/platforms for rendering, no physics
         if (cfg) {
           updateLava(dt);
+          updateImpactWaves(dt);
           for (var i = 0; i < plats.length; i++) plats[i].update(dt);
         }
         // If no state received for 5 seconds, host is gone — return to lobby
-        if (lastStateRecvTime > 0 && performance.now() - lastStateRecvTime > 5000) {
+        if (lastStateRecvTime > 0 && (performance.now() / 1000) - lastStateRecvTime > 5) {
           console.log('Observer: no state for 5s — returning to lobby');
           lobbyState = 'lobby'; mySlotIndex = -1; cfg = null;
           for (var si = 0; si < 12; si++) { slots[si].peerId = null; slots[si].ready = false; slots[si].progress = 0; slots[si].holding = false; }
@@ -3490,22 +4562,9 @@
       myBenchmark = runBenchmark();
       console.log('Benchmark score:', myBenchmark);
 
-      // Room code: only use if explicitly in URL (from QR code scan)
-      // Otherwise, server groups by WAN IP automatically
-      var urlParams = new URLSearchParams(window.location.search);
-      var roomCode = urlParams.get('room') || '';
-      window._roomCode = roomCode;
-
-      // For the QR code, generate a room code so cross-IP devices can join
-      // (handles IPv4/IPv6 mismatch when scanning QR)
-      if (!roomCode) {
-        roomCode = Math.random().toString(36).slice(2, 8);
-        window._qrRoomCode = roomCode;
-      }
-      console.log('Room:', roomCode ? 'code:' + roomCode : 'auto (WAN IP)');
-
-      // QR code always includes a room code for reliable cross-device joining
-      var qrUrl = 'https://erd.mmec.ca/gm1/?room=' + (window._qrRoomCode || roomCode);
+      // QR code — plain URL, no room parameter (server groups by LAN automatically)
+      console.log('Room: auto (LAN)');
+      var qrUrl = 'https://erd.mmec.ca/gm1/';
       qrCanvas = generateQR(qrUrl);
 
       // Connect to signaling server
@@ -3516,6 +4575,4 @@
     }
 
     init();
-  </script>
-</body>
-</html>
+  </script> </body> </html>
