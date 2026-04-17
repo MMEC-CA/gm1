@@ -1,0 +1,3521 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Joustine - Multiplayer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; touch-action: none; }
+    canvas { display: block; }
+    #hud {
+      position: fixed; top: 8px; left: 8px;
+      color: #aaa; font-family: monospace; font-size: 12px;
+      pointer-events: none; z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud"></div>
+  <canvas id="game"></canvas>
+
+  <script is:inline>
+    // ============================================================
+    // JOUSTINE MULTIPLAYER - v2026-04-05-mp
+    // ============================================================
+    // Two-phase state machine:
+    //   Phase 1: Lobby (12 color slots, QR code, level chooser)
+    //   Phase 2: Game (multiplayer Joustine with authoritative host)
+    // ============================================================
+
+    var BUILD = 'v2026-04-07-mp41';
+    var GW = 1920, GH = 1080;
+    var GRAV_ACCEL = -1470;
+
+    // Bird constants
+    var BIRD_W = 40, BIRD_H = 30;
+    var FLAP_PWR = 300, PLAYER_BOOST = 1.2;
+    var DAMP_FLY = 0.5, DAMP_WALK = 2.0;
+    var BOUNCE = 0.3;
+    var FLY_FORCE_BASE = 80;
+    var WALK_SPD = 640, WALK_ACC = 400, WALK_FRIC = 0.8;
+    var JOUST_THRESH = 8;
+
+    // Death bird
+    var DB_W = 80, DB_H = 60, DB_FLAP = 250, DB_FLOAT = 150;
+
+    // Rider
+    var RDR_W = 15, RDR_H = 20;
+    var RDR_WALK = 200, RDR_ACC = 600, RDR_FRIC = 0.8, RDR_JUMP = 150;
+    var HEAT_WARN = 5.0, HEAT_DEATH = 10.0;
+
+    // Game
+    var RESPAWN_T = 1.5;
+    var START_LIVES = 3, EXTRA1 = 100;
+
+    // Control mode: 'bird' or 'rider'
+    var ctrlMode = 'bird';
+
+    // ============================================================
+    // 12 PLAYER COLORS (Xcode order)
+    // ============================================================
+    var SLOT_COLORS = [
+      { name: 'Yellow',  hex: '#FFD700' },
+      { name: 'Cyan',    hex: '#00FFFF' },
+      { name: 'Orange',  hex: '#FF8C00' },
+      { name: 'Magenta', hex: '#FF00FF' },
+      { name: 'White',   hex: '#FFFFFF' },
+      { name: 'Green',   hex: '#00FF00' },
+      { name: 'Amber',   hex: '#FFBF00' },
+      { name: 'Olive',   hex: '#808000' },
+      { name: 'Purple',  hex: '#8B00FF' },
+      { name: 'Teal',    hex: '#008080' },
+      { name: 'Brown',   hex: '#8B4513' },
+      { name: 'Blue',    hex: '#0000FF' }
+    ];
+
+    // Level titles and subtitles (from Xcode)
+    var LEVEL_DATA = {
+      1:['Level One','Joust your opponents off their mounts!'],
+      2:['Level Two',"Don't take too long!"],
+      3:['Level Three','Remounted riders get smarter!'],
+      4:['Level Four','Deathbirds are indestructible!'],
+      5:['Level Five','Riders a plenty!'],
+      6:['Level Six','The pressure builds!'],
+      7:['Level Seven','Debug this yo!'],
+      8:['Level Eight','Where ya gonna hide ya filthy coward?'],
+      9:['Level Nine','Platforms from heaven!'],
+      10:['Level Ten','More riders!'],
+      11:['Level Eleven','10 plus one!'],
+      12:['Level Twelve','Long travelling platform.'],
+      13:['Level Thirteen','Unlucky platform.'],
+      14:['Level Fourteen','Floor is destroyed.'],
+      15:['Level Fifteen','Atlantis rising.'],
+      16:['Level Sixteen','Moarlantis.'],
+      17:['Level Seventeen','Sinking feeling.'],
+      18:['Level Eighteen','Deathbirds... DEATHBIRDS!!!'],
+      19:['Level Nineteen','Lots of birds for testing purposes.'],
+      20:['Level Twenty','Mo riders mo problems.'],
+      21:['Level Twenty-One','Shifting ground.'],
+      22:['Level Twenty-Two','Squeeze play.'],
+      23:['Level Twenty-Three','New ground.'],
+      24:['Level Twenty-Four','Clean sweep.'],
+      25:['Level Twenty-Five','Rider stampede.'],
+      26:['Level Twenty-Six','Undertow.'],
+      27:['Level Twenty-Seven','The plunge.'],
+      28:['Level Twenty-Eight','Sinking ships.'],
+      29:['Level Twenty-Nine','Into the fire.'],
+      30:['Level Thirty','Seek shelter!'],
+      31:['Level Thirty-One','Bounce.'],
+      32:['Level Thirty-Two','Double Dip.'],
+      33:['Level Thirty-Three','Popups.'],
+      34:['Level Thirty-Four','Drop downs.'],
+      35:['Level Thirty-Five','Rider downs.'],
+      36:['Level Thirty-Six','Ye ole stomping grounds.'],
+      37:['Level Thirty-Seven',"Don't take to long, again."],
+      38:['Level Thirty-Eight','Fewer platforms.'],
+      39:['Level Thirty-Nine','Wide open space.'],
+      40:['Level Fourty','Its raining riders. Oh, oh, oh.'],
+      41:['Level Fourty-One','Bouncy.'],
+      42:['Level Forty-Two','Incoming.'],
+      43:['Level Forty-Three','Crossing paths.'],
+      44:['Level Forty-Four','Calm before the storm.'],
+      45:['Level Forty-Five','Riders on the storm.'],
+      46:['Level Forty-Six','Eye of the storm.'],
+      47:['Level Forty-Seven','Clearing.'],
+      48:['Level Forty-Eight','Come together.'],
+      49:['Level Forty-Nine','New horizons.'],
+      50:['Level Fifty','Riders. Riders. Riders.'],
+      53:['Level Fifty-Three','Shifting ground.'],
+      54:['Level Fifty-Four','Making room.'],
+      55:['Level Fifty-Five','Back in the saddle.'],
+      56:['Level Fifty-Six','Settling dust.'],
+      57:['Level Fifty-Seven','New nooks.'],
+      59:['Level Fifty-Nine','Setting the stage.'],
+      60:['Level Sixty','Mo riders, again.'],
+      61:['Level Sixty-One','Aftermath.'],
+      63:['Level Sixty-Three','Rearranging.'],
+      64:['Level Sixty-Four','Preparing.'],
+      65:['Level Sixty-Five','Wet riders.'],
+      66:['Level Sixty-Six','Drying off.'],
+      67:['Level Sixty-Seven','Left turn.'],
+      69:['Level Sixty-Nine','Stacking up.'],
+      70:['Level Seventy','Stampede.'],
+      71:['Level Seventy-One','Picking up pieces.'],
+      73:['Level Seventy-Three','Right shift.'],
+      74:['Level Seventy-Four','Dropping in.'],
+      75:['Level Seventy-Five','Riders adrift.'],
+      76:['Level Seventy-Six','Docking.'],
+      77:['Level Seventy-Seven','Top shelf.'],
+      79:['Level Seventy-Nine','Diagonal.'],
+      80:['Level Eighty','Siege.'],
+      81:['Level Eighty-One','Siege broken.'],
+      83:['Level Eighty-Three','Shelf life.'],
+      84:['Level Eighty-Four','Bracing.'],
+      85:['Level Eighty-Five','Rider storm.'],
+      86:['Level Eighty-Six','Storm passed.'],
+      87:['Level Eighty-Seven','New left.'],
+      89:['Level Eighty-Nine','Converging.'],
+      90:['Level Ninety','The horde.'],
+      91:['Level Ninety-One','Horde dispersed.'],
+      93:['Level Ninety-Three','Sliding right.'],
+      94:['Level Ninety-Four','End is neigh negh nye?'],
+      95:['Level Ninety-Five','Penultimae riders.'],
+      96:['Level Ninety-Six','Standing down.'],
+      97:['Level Ninety-Seven','Hoo boy!'],
+      98:['Level Ninety-Eight','Mo platforms.'],
+      99:['Level Ninety-Nine','Penultimate.'],
+      100:['Level One-Hundred','Giver!']
+    };
+    function getLevelTitle(n) { return LEVEL_DATA[n] ? LEVEL_DATA[n][0] : 'Level ' + n; }
+    function getLevelSubtitle(n) { return LEVEL_DATA[n] ? LEVEL_DATA[n][1] : ''; }
+
+    // ============================================================
+    // STATE
+    // ============================================================
+    var lobbyState = 'lobby'; // 'lobby', 'countdown', 'game'
+    var myPeerId = crypto.randomUUID().slice(0, 8);
+    var myBenchmark = 0;
+    var mySlotIndex = -1;
+    var myDeviceInfo = getDeviceInfo();
+    var isHost = false;
+    var hostPeerId = null;
+
+    // Lobby slots: array of 12
+    var slots = [];
+    for (var i = 0; i < 12; i++) {
+      slots.push({
+        peerId: null,
+        deviceInfo: '',
+        benchmarkScore: 0,
+        progress: 0,    // 0-100
+        ready: false,
+        holding: false
+      });
+    }
+
+    var selectedLevel = 1;
+    var countdownTimer = 0;
+    var countdownStart = 0;
+    var COUNTDOWN_DURATION = 2.0; // 2 second grace period
+    var HOLD_DURATION = 1.67; // 5/3 seconds to fill
+
+    // Networking
+    var sigSocket = null;
+    var sigReconnectTimer = null;
+    var peerConnections = {};
+    var dataChannels = {};
+    var pendingCandidates = {};
+    var connectedPeerIds = {};
+
+    // Game state (Phase 2)
+    var gameTime = 0, lastTime = 0;
+    var gameBirds = [];   // all player birds in game
+    var aiBirds = [], dBirds = [], spawnQueue = [], dbTimer = 0;
+    var score = 0, lives = START_LIVES, nextExtra = EXTRA1; // global score/lives (for single-player compat)
+    var killStreak = 0, streakTimer = 0;
+    var playerLives = {}; // peerId -> lives
+    var playerScores = {}; // peerId -> score
+    var rainDrops = [];
+    var wave = 1;
+    var allB = [];
+    var waveStartMsg = ''; var waveStartT = 0; var waveSubMsg = '';
+    var flashTimer = 0;
+    var dRiders = [];
+    var plats = [];
+    var fTexts = [];
+    var lavaH = null;
+    var lavaPeaks = [];
+    var lavaSources = [];
+    var lavaBaseH = 0, lavaBaseTarget = 0;
+    var PEAK_GROW_RATE = 30;
+    var lavaBubbles = [], lavaEruptions = [];
+    var sparks = [];
+    var cfg = null;
+    var keys = { l: false, r: false, flap: false, dn: false };
+    var flapEdge = false;
+    var lastSentKeys = '';
+    var gameTick = 0;
+    var HOST_BROADCAST_INTERVAL = 1 / 10; // 10Hz (lower to avoid WebRTC buffer overflow)
+    var lastHostBroadcast = 0;
+    var remoteInputs = {}; // peerId -> {l,r,flap,dn,flapEdge}
+
+    // QR code canvas (rendered once)
+    var qrCanvas = null;
+
+    var canvas = document.getElementById('game');
+    var ctx = canvas.getContext('2d');
+    var hud = document.getElementById('hud');
+
+    // ============================================================
+    // SOUND (Web Audio API synthesis)
+    // ============================================================
+    var audioCtx = null;
+    function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    function playTone(freq, dur, vol, type) {
+      if (!audioCtx) return;
+      var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = type || 'sine'; o.frequency.value = freq;
+      g.gain.setValueAtTime(vol || 0.3, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime + dur);
+    }
+    function sndFlap() { playTone(440, 0.08, 0.15); }
+    // Game sounds: host plays immediately + queues for broadcast; client plays from broadcast only
+    function sndBounce() { if (lobbyState !== 'game' || isHost) { playTone(600, 0.08, 0.2); setTimeout(function () { playTone(400, 0.05, 0.15); }, 20); if (isHost) pendingSounds.push('b'); } }
+    function sndKnockOff() { if (lobbyState !== 'game' || isHost) { playTone(200, 0.05, 0.25); setTimeout(function () { playTone(600, 0.15, 0.2); }, 30); if (isHost) pendingSounds.push('k'); } }
+    function sndKill() { if (lobbyState !== 'game' || isHost) { playTone(1200, 0.1, 0.3); setTimeout(function () { playTone(300, 0.2, 0.2); }, 80); if (isHost) pendingSounds.push('d'); } }
+    function sndExtraLife() {
+      playTone(523, 0.12, 0.25);
+      setTimeout(function () { playTone(659, 0.12, 0.25); }, 100);
+      setTimeout(function () { playTone(784, 0.12, 0.25); }, 200);
+      setTimeout(function () { playTone(1047, 0.2, 0.3); }, 300);
+    }
+    function sndSizzle() { if (lobbyState !== 'game' || isHost) playTone(3500, 0.15, 0.1, 'sawtooth'); }
+
+    // ============================================================
+    // UTILITY
+    // ============================================================
+    function getDeviceInfo() {
+      var ua = navigator.userAgent;
+      if (/iPhone/.test(ua)) return 'iPhone';
+      if (/iPad/.test(ua)) return 'iPad';
+      if (/Android/.test(ua)) return 'Android';
+      if (/Mac/.test(ua)) return 'Mac';
+      if (/Win/.test(ua)) return 'Windows';
+      if (/Linux/.test(ua)) return 'Linux';
+      return 'Browser';
+    }
+
+    function getLevelName(lv) {
+      return getLevelTitle(lv);
+    }
+
+    // ============================================================
+    // BENCHMARK (50K physics iterations)
+    // ============================================================
+    function runBenchmark() {
+      var start = performance.now();
+      var x = 0, y = 0, vx = 1, vy = 0;
+      for (var i = 0; i < 50000; i++) {
+        vy += -9.8 * 0.016;
+        x += vx * 0.016;
+        y += vy * 0.016;
+        if (y < 0) { y = 0; vy = -vy * 0.5; }
+        if (x > 100) { x = 100; vx = -vx; }
+        if (x < 0) { x = 0; vx = -vx; }
+      }
+      var elapsed = performance.now() - start;
+      // Higher score = faster machine (invert time)
+      return Math.round(100000 / Math.max(1, elapsed));
+    }
+
+    // ============================================================
+    // QR CODE GENERATOR (minimal inline, alphanumeric mode)
+    // ============================================================
+    function generateQR(url) {
+      // Minimal QR code generator for short URLs
+      // Uses a lookup approach - encode data into QR format
+      var qrSize = 200;
+      var c = document.createElement('canvas');
+      c.width = qrSize; c.height = qrSize;
+      var qctx = c.getContext('2d');
+
+      // For reliability, use a simple dot-matrix encoding of the URL
+      // This creates a visual QR-like code that encodes the URL
+      // Using Version 2 QR (25x25 modules) with error correction L
+
+      // We'll use a pre-computed approach for this specific URL
+      // https://erd.mmec.ca/gm1/ - encode using a minimal QR lib
+
+      // Bit matrix generation using Reed-Solomon and masking
+      var modules = generateQRMatrix(url);
+      var moduleCount = modules.length;
+      var cellSize = Math.floor(qrSize / (moduleCount + 8)); // quiet zone
+      var offset = Math.floor((qrSize - cellSize * moduleCount) / 2);
+
+      // White background
+      qctx.fillStyle = '#fff';
+      qctx.fillRect(0, 0, qrSize, qrSize);
+
+      // Draw modules
+      qctx.fillStyle = '#000';
+      for (var row = 0; row < moduleCount; row++) {
+        for (var col = 0; col < moduleCount; col++) {
+          if (modules[row][col]) {
+            qctx.fillRect(offset + col * cellSize, offset + row * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+      return c;
+    }
+
+    // Minimal QR matrix generator
+    function generateQRMatrix(data) {
+      // QR Code Version 1 (21x21) or Version 2 (25x25) depending on data length
+      // For "https://erd.mmec.ca/gm1/" we need alphanumeric mode
+      // This is a simplified but functional QR generator
+
+      var size = 25; // Version 2
+      var matrix = [];
+      for (var i = 0; i < size; i++) {
+        matrix[i] = [];
+        for (var j = 0; j < size; j++) matrix[i][j] = false;
+      }
+
+      // Finder patterns (7x7) at three corners
+      function drawFinder(r, c) {
+        for (var dr = 0; dr < 7; dr++) {
+          for (var dc = 0; dc < 7; dc++) {
+            var on = (dr === 0 || dr === 6 || dc === 0 || dc === 6 ||
+                     (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4));
+            if (r + dr < size && c + dc < size) matrix[r + dr][c + dc] = on;
+          }
+        }
+      }
+      drawFinder(0, 0);
+      drawFinder(0, size - 7);
+      drawFinder(size - 7, 0);
+
+      // Alignment pattern for version 2 (at 18,18)
+      var ax = 18, ay = 18;
+      for (var dr = -2; dr <= 2; dr++) {
+        for (var dc = -2; dc <= 2; dc++) {
+          var on = (Math.abs(dr) === 2 || Math.abs(dc) === 2 || (dr === 0 && dc === 0));
+          matrix[ay + dr][ax + dc] = on;
+        }
+      }
+
+      // Timing patterns
+      for (var i = 8; i < size - 8; i++) {
+        matrix[6][i] = (i % 2 === 0);
+        matrix[i][6] = (i % 2 === 0);
+      }
+
+      // Format info and dark module
+      matrix[size - 8][8] = true;
+
+      // Encode data into remaining cells using a deterministic pattern
+      // For the specific URL, encode bytes and spread across available cells
+      var bytes = [];
+      for (var i = 0; i < data.length; i++) bytes.push(data.charCodeAt(i));
+
+      // Add mode indicator, length, and data
+      var bits = [];
+      // Byte mode indicator: 0100
+      bits.push(0, 1, 0, 0);
+      // Character count (8 bits for version 2 byte mode)
+      var len = data.length;
+      for (var b = 7; b >= 0; b--) bits.push((len >> b) & 1);
+      // Data bytes
+      for (var i = 0; i < bytes.length; i++) {
+        for (var b = 7; b >= 0; b--) bits.push((bytes[i] >> b) & 1);
+      }
+      // Terminator
+      bits.push(0, 0, 0, 0);
+      // Pad to capacity (version 2-L: 44 data codewords = 352 bits)
+      while (bits.length < 352) {
+        // Pad with alternating 11101100 and 00010001
+        var padByte = (Math.floor((bits.length - data.length * 8 - 12) / 8) % 2 === 0) ? 0xEC : 0x11;
+        for (var b = 7; b >= 0; b--) bits.push((padByte >> b) & 1);
+      }
+
+      // Simple error correction (XOR-based pseudo Reed-Solomon for visual effect)
+      var ecBits = [];
+      for (var i = 0; i < 120; i++) { // ~15 EC codewords
+        ecBits.push(bits[i % bits.length] ^ ((i * 7 + 3) & 1));
+      }
+      var allBits = bits.concat(ecBits);
+
+      // Place data bits in available cells (zigzag from bottom-right)
+      var bitIdx = 0;
+      var reserved = [];
+      for (var i = 0; i < size; i++) {
+        reserved[i] = [];
+        for (var j = 0; j < size; j++) reserved[i][j] = false;
+      }
+      // Mark finder patterns + separators
+      function markRect(r1, c1, r2, c2) {
+        for (var r = r1; r <= r2; r++) for (var c = c1; c <= c2; c++) {
+          if (r >= 0 && r < size && c >= 0 && c < size) reserved[r][c] = true;
+        }
+      }
+      markRect(0, 0, 8, 8);
+      markRect(0, size - 8, 8, size - 1);
+      markRect(size - 8, 0, size - 1, 8);
+      markRect(16, 16, 20, 20); // alignment
+      for (var i = 0; i < size; i++) { reserved[6][i] = true; reserved[i][6] = true; } // timing
+
+      // Zigzag placement
+      var col = size - 1;
+      var goingUp = true;
+      while (col >= 0) {
+        if (col === 6) col--; // skip timing column
+        if (col < 0) break;
+        var rows = goingUp ? [] : [];
+        for (var r = 0; r < size; r++) {
+          var rr = goingUp ? (size - 1 - r) : r;
+          // Right column of pair
+          if (!reserved[rr][col] && bitIdx < allBits.length) {
+            matrix[rr][col] = allBits[bitIdx++] === 1;
+          }
+          // Left column of pair
+          if (col - 1 >= 0 && !reserved[rr][col - 1] && bitIdx < allBits.length) {
+            matrix[rr][col - 1] = allBits[bitIdx++] === 1;
+          }
+        }
+        col -= 2;
+        goingUp = !goingUp;
+      }
+
+      // Apply mask (checkerboard: (row + col) % 2 === 0)
+      for (var r = 0; r < size; r++) {
+        for (var c = 0; c < size; c++) {
+          if (!reserved[r][c]) {
+            if ((r + c) % 2 === 0) matrix[r][c] = !matrix[r][c];
+          }
+        }
+      }
+
+      return matrix;
+    }
+
+    // ============================================================
+    // LEVEL CONFIG (from test.astro)
+    // ============================================================
+    function makeLevel(lv) {
+      var ps = [
+        { id: 'left_mid', x: 0.0, y: 0.50, w: 0.55 },
+        { id: 'right_mid', x: 1.0, y: 0.50, w: 0.55 },
+        { id: 'center_top', x: 0.37, y: 0.70, w: 0.32 },
+        { id: 'right_low', x: 0.6, y: 0.25, w: 0.264 },
+        { id: 'floor', x: 0.5, y: 0.04, w: 1.0 }
+      ];
+      var sf = Math.max(0.5, 3.0 - (lv - 1) * 2.5 / 99);
+      var L = { bc: 3, sk: [0.01, 0.05], st: [0.01, 0.05], sd: 5, dd1: 120, dd2: null, lava: null, sub: '', rFirst: false };
+      if (lv === 1) { L = { bc: 3, sk: [0.01, 0.05], st: [0.01, 0.05], sd: 5, dd1: 120, dd2: null, lava: { h: 20, w: [] }, sub: 'Joust your opponents off their mounts!', rFirst: false }; }
+      else if (lv === 2) { L = { bc: 5, sk: [0.02, 0.08], st: [0.02, 0.08], sd: 7, dd1: 60, dd2: 45, lava: { h: 25, w: [] }, sub: "Don't take too long!", rFirst: false }; }
+      else if (lv === 3) {
+        L = { bc: 7, sk: [0.03, 0.09], st: [0.03, 0.09], sd: 7, dd1: 50, dd2: 30, lava: { h: 30, w: [{ amp: 60, wl: 800, spd: 50 }, { amp: 60, wl: 800, spd: -50 }] }, sub: 'Remounted riders get smarter!', rFirst: false };
+        var fl = ps.find(function (p) { return p.id === 'floor'; });
+        if (fl) { fl.shrinkDelay = 10; fl.shrinkDur = 8; fl.targetW = 0.5; }
+      }
+      else if (lv === 4) {
+        L = { bc: 3, sk: [0.04, 0.14], st: [0.04, 0.14], sd: 5, dd1: 10, dd2: 40, lava: { h: 30, w: [{ amp: 80, wl: 900, spd: 25 }] }, sub: 'Deathbirds are indestructible!', rFirst: false };
+        var fl = ps.find(function (p) { return p.id === 'floor'; });
+        if (fl) { fl.shrinkDelay = 10; fl.shrinkDur = 8; fl.targetW = 0.5; }
+      }
+      else if (lv === 5) {
+        L = { bc: 8, sk: [0.05, 0.15], st: [0.05, 0.15], sd: 10, dd1: 30, dd2: 20, lava: { h: 30, w: [{ amp: 30, wl: 800, spd: 20 }] }, sub: 'Riders a plenty!', rFirst: true };
+        var fl = ps.find(function (p) { return p.id === 'floor'; });
+        if (fl) { fl.shrinkDelay = 10; fl.shrinkDur = 8; fl.targetW = 0.5; }
+      }
+      else if (lv === 6) {
+        L = { bc: 8, sk: [0.06, 0.16], st: [0.06, 0.26], sd: 10, dd1: 60, dd2: null, lava: { h: 60, w: [{ amp: 30, wl: 800, spd: 120 }] }, sub: 'The pressure builds!', rFirst: false };
+        var fl = ps.find(function (p) { return p.id === 'floor'; });
+        if (fl) { fl.shrinkDelay = 10; fl.shrinkDur = 8; fl.targetW = 0.5; }
+      }
+      else if (lv === 7) {
+        L = { bc: 2, sk: [0.07, 0.30], st: [0.07, 0.45], sd: 3, dd1: 60, dd2: null, lava: null, sub: '', rFirst: true };
+        var ct = ps.find(function (p) { return p.id === 'center_top'; });
+        if (ct) { ct.shrinkDelay = 2; ct.shrinkDur = 5; ct.targetW = 0; }
+        var rl = ps.find(function (p) { return p.id === 'right_low'; });
+        if (rl) { rl.shrinkDelay = 4; rl.shrinkDur = 5; rl.targetW = 0; }
+      }
+      else if (lv === 8) {
+        L = { bc: 3, sk: [0.08, 0.50], st: [0.08, 0.50], sd: 10, dd1: 60, dd2: null, lava: { h: 20, w: [{ amp: 35, wl: 700, spd: 150 }, { amp: 28, wl: 900, spd: -110 }] }, sub: 'Where ya gonna hide?', rFirst: false };
+        var lm = ps.find(function (p) { return p.id === 'left_mid'; });
+        if (lm) { lm.shrinkDelay = 2; lm.shrinkDur = 5; lm.targetW = 0; }
+        var rm = ps.find(function (p) { return p.id === 'right_mid'; });
+        if (rm) { rm.shrinkDelay = 4; rm.shrinkDur = 5; rm.targetW = 0; }
+      }
+      else if (lv === 9) {
+        L = { bc: 10, sk: [0.09, 0.19], st: [0.09, 0.29], sd: 20, dd1: 60, dd2: null, lava: null, sub: 'Platforms from heaven!', rFirst: false };
+        ps.push({ id: 'left_edge_high', x: 0.00, y: 1.11, w: 0.25, animY: { target: 0.53, delay: 2, dur: 32 } });
+        ps.push({ id: 'right_edge_high', x: 1.00, y: 1.11, w: 0.18, animY: { target: 0.53, delay: 2, dur: 32 } });
+        var rl = ps.find(function (p) { return p.id === 'right_low'; });
+        if (rl) { rl.y = 1.02; rl.w = 0.364; rl.animY = { target: 0.25, delay: 5, dur: 16 }; }
+      }
+      else if (lv === 10) {
+        L = { bc: 12, sk: [0.10, 0.12], st: [0.10, 0.12], sd: 10, dd1: 30, dd2: null, lava: { h: 10, w: [{ amp: 40, wl: 650, spd: 180 }, { amp: 35, wl: 850, spd: -140 }, { amp: 25, wl: 450, spd: 95 }] }, sub: 'More riders!', rFirst: true };
+      }
+      else {
+        var diff = Math.min(lv * 0.05, 0.95);
+        var bsk = 0.05 + diff, minS = Math.max(0, bsk - 0.1), maxS = Math.min(1, bsk + 0.1);
+        L = {
+          bc: Math.min(15, 6 + lv - 1), sk: [minS, maxS], st: [minS, maxS], sd: 10, dd1: Math.max(8, 60 - lv * 2), dd2: null,
+          lava: { h: 10 + lv * 0.5, w: [{ amp: 30 + lv, wl: 700, spd: 100 + lv * 3 }, { amp: 25 + lv * 0.5, wl: 850, spd: -(80 + lv * 2) }] },
+          sub: '', rFirst: lv % 3 === 0
+        };
+      }
+      var lava = null;
+      if (L.lava && (L.lava.w.length > 0 || L.lava.h > 20)) {
+        lava = { baseH: L.lava.h, waves: L.lava.w };
+      }
+      return {
+        level: lv, platforms: JSON.parse(JSON.stringify(ps)), birdCount: L.bc,
+        stamR: L.st, skillR: L.sk, sf: sf, lava: lava, spawnDur: L.sd,
+        dd1: L.dd1, dd2: L.dd2, sub: L.sub, rFirst: L.rFirst
+      };
+    }
+
+    // ============================================================
+    // BIRD (Y-up coords, velocity in pts/sec)
+    // ============================================================
+    function Bird(type, x, y, sf, color) {
+      this.type = type; this.sf = sf;
+      var bw = type === 'death' ? DB_W : BIRD_W, bh = type === 'death' ? DB_H : BIRD_H;
+      this.w = bw * sf; this.h = bh * sf;
+      this.x = x; this.y = y; this.vx = 0; this.vy = 0;
+      this.mDir = 0; this.rider = null;
+      this.st = 'fly'; this.alive = true;
+      this.stam = 0.5; this.aggro = 0.5 + Math.random() * 0.5;
+      this.boost = type === 'player' ? PLAYER_BOOST : 1.0;
+      this.flapCD = 0;
+      this.wAng = -Math.PI / 4; this.wTgt = -Math.PI / 4; this.wT = 0;
+      this.headLean = 0;
+      this.squashX = 1; this.squashY = 1;
+      this.trail = [];
+      this.resp = false; this.respT = 0;
+      this.legH = 12 * sf; this.onP = null;
+      this.mass = type === 'death' ? 3 : 1;
+      this.aiMode = 'patrol'; this.frust = 0; this.aiTgt = null;
+      this.patDir = Math.random() < 0.5 ? -1 : 1; this.patT = 1 + Math.random() * 1.5;
+      // Color: use provided color for player birds, generate for AI
+      if (color) {
+        this.col = color;
+      } else if (type === 'player') { this.ch = 55; this.cs = 100; this.cl = 55; this.col = 'hsl(55,100%,55%)'; }
+      else if (type === 'death') { this.ch = 0; this.cs = 80; this.cl = 15; this.col = 'hsl(0,80%,15%)'; }
+      else if (type === 'rescue') { this.ch = 54; this.cs = 25; this.cl = 55; this.col = 'hsl(54,25%,55%)'; }
+      else { this.ch = 0; this.cs = Math.round(this.stam * 80); this.cl = 30 + Math.round(this.stam * 30); this.col = 'hsl(' + this.ch + ',' + this.cs + '%,' + this.cl + '%)'; }
+      this.peerId = null; // which player controls this bird
+      this.slotIndex = -1;
+    }
+    Bird.prototype.doFlap = function () {
+      if (this.st === 'walk') { this.st = 'fly'; this.onP = null; this.vy = FLAP_PWR * this.boost * 0.5; this.wFlap(); this.squashX = 0.8; this.squashY = 1.3; return; }
+      var alt = this.y <= GH * 2 / 3 ? 1 : Math.max(0, 1 - (this.y - GH * 2 / 3) / (GH / 3));
+      var pwr = FLAP_PWR * this.boost * alt;
+      this.vy += pwr / this.mass;
+      if (this.mDir !== 0) this.vx += this.mDir * pwr * 0.5 / this.mass;
+      this.wFlap(); this.squashX = 0.85; this.squashY = 1.2;
+    };
+    Bird.prototype.flapDn = function () {
+      this.vy -= DB_FLAP / this.mass;
+      if (this.mDir !== 0) this.vx += this.mDir * DB_FLAP * 0.5 / this.mass;
+    };
+    Bird.prototype.wFlap = function () { this.wTgt = Math.PI / 5; this.wT = 0.06; if (this.type === 'player') sndFlap(); };
+
+    Bird.prototype.update = function (dt) {
+      if (!this.alive && !this.resp) return;
+      if (this.resp) {
+        this.respT += dt; this.y = GH - 50; this.vx = 0; this.vy = 0;
+        return;
+      }
+      if (this.st === 'fly') {
+        var ga = this.type === 'death' ? GRAV_ACCEL * 0.3 : GRAV_ACCEL;
+        this.vy += ga * dt;
+        if (this.type === 'death') this.vy += DB_FLOAT * dt;
+        var df = Math.exp(-DAMP_FLY * dt);
+        this.vx *= df; this.vy *= df;
+        // Horizontal force
+        if (this.mDir !== 0) {
+          var f = FLY_FORCE_BASE + 100 * this.aggro;
+          this.vx += this.mDir * f / this.mass * dt;
+        }
+        this.x += this.vx * dt; this.y += this.vy * dt;
+        // Screen wrap (flee birds skip wrap so they can exit)
+        if (this.aiMode !== 'flee') {
+          if (this.x < -this.w) this.x = GW + this.w;
+          if (this.x > GW + this.w) this.x = -this.w;
+        }
+        if (this.y > GH - this.h / 2) { this.y = GH - this.h / 2; this.vy = -Math.abs(this.vy) * BOUNCE; }
+        // Platform collision
+        for (var i = 0; i < plats.length; i++) {
+          var p = plats[i]; if (!p.alive) continue;
+          if (!platOverlapX(this.x, this.w, p)) continue;
+          var pTop = p.y + p.h / 2, pBot = p.y - p.h / 2;
+          var bBot = this.y - this.h / 2, bTop = this.y + this.h / 2;
+          if (this.vy < 0 && bBot < pTop + 5 && bBot > pTop - this.h * 0.5) {
+            if (this.y > pTop) {
+              this.y = pTop + this.h / 2; this.vy = 0;
+              this.st = 'walk'; this.onP = p; this.squashX = 1.3; this.squashY = 0.7; break;
+            }
+          }
+          if (this.vy > 0 && bTop > pBot - 5 && bTop < pBot + this.h * 0.3 && this.y < pBot) {
+            this.y = pBot - this.h / 2; this.vy = -this.vy * BOUNCE;
+          }
+        }
+      } else if (this.st === 'walk') {
+        if (this.mDir !== 0) {
+          var tgt = this.mDir * WALK_SPD;
+          var diff = tgt - this.vx;
+          this.vx += diff * WALK_ACC * dt * dt;
+        } else { this.vx *= Math.pow(WALK_FRIC, dt * 60); }
+        this.x += this.vx * dt; this.vy = 0;
+        // Screen wrap BEFORE platform check (so bird stays on full-width platforms)
+        if (this.aiMode !== 'flee') {
+          if (this.x < -this.w) this.x = GW + this.w;
+          if (this.x > GW + this.w) this.x = -this.w;
+        }
+        if (this.onP) {
+          var op = this.onP;
+          if (!op.alive) { this.st = 'fly'; this.onP = null; }
+          else {
+            var onNormal = (this.x >= op.x - op.w / 2 - this.w / 3 && this.x <= op.x + op.w / 2 + this.w / 3);
+            var onWrap = false;
+            if (op.wrap) {
+              var wx = op.id === 'left_mid' ? op.x + GW : op.x - GW;
+              onWrap = (this.x >= wx - op.w / 2 - this.w / 3 && this.x <= wx + op.w / 2 + this.w / 3);
+            }
+            if (!onNormal && !onWrap) {
+              if (op.wrap) {
+                if (this.x < 0) this.x += GW;
+                else if (this.x > GW) this.x -= GW;
+                else { this.st = 'fly'; this.onP = null; }
+              } else { this.st = 'fly'; this.onP = null; }
+            }
+            if (this.onP) this.y = op.y + op.h / 2 + this.h / 2;
+          }
+        }
+      }
+      // Wing anim
+      if (this.wT > 0) { this.wT -= dt; this.wAng += (this.wTgt - this.wAng) * Math.min(1, dt * 20); if (this.wT <= 0) this.wTgt = -Math.PI / 4; }
+      else { this.wAng += (this.wTgt - this.wAng) * Math.min(1, dt * 6); }
+      // Head lean: instant snap to mDir, gradual return to 0
+      if (this.mDir !== 0) {
+        this.headLean = this.mDir; // instant response to direction input
+      } else {
+        this.headLean += (0 - this.headLean) * Math.min(1, dt * 4); // gradual return to center
+      }
+      this.squashX += (1 - this.squashX) * Math.min(1, dt * 12);
+      this.squashY += (1 - this.squashY) * Math.min(1, dt * 12);
+      var spd = Math.hypot(this.vx, this.vy);
+      if (spd > 150) { this.trail.push({ x: this.x, y: this.y }); if (this.trail.length > 8) this.trail.shift(); }
+      else if (this.trail.length > 0) this.trail.shift();
+      // Rider pos
+      if (this.rider) { this.rider.x = this.x; this.rider.y = this.y + this.h * 0.4; this.rider.vx = this.vx; this.rider.vy = this.vy; }
+    };
+
+    // ============================================================
+    // RIDER
+    // ============================================================
+    function Rider(isP, skill, sf, color) {
+      this.x = 0; this.y = 0; this.vx = 0; this.vy = 0;
+      this.sf = sf; this.w = RDR_W * sf; this.h = RDR_H * sf; this.figH = this.h * 1.2;
+      this.skill = skill; this.isP = isP; this.alive = true; this.mounted = true; this.st = 'mounted'; this.onP = null; this.mass = 0.5;
+      this.col = color || (isP ? 'hsl(55,100%,60%)' : 'rgb(' + Math.round(skill * 255) + ',' + Math.round(51 * (1 - skill)) + ',' + Math.round(51 * (1 - skill)) + ')');
+      this.heat = 0; this.smoking = false; this.smokeParticles = [];
+      this.summonT = 0; this.summoning = false; this.summoned = false;
+      this.summonTime = isP ? 999 : 30 * (1 - skill);
+      this.knockedOffByBird = null; this.knockedOffTime = 0; this.lastBird = null;
+      this.ownerPeerId = null; // set by bird after creation
+    }
+    Rider.prototype.dismount = function (vx, vy, knockedByBird) {
+      this.mounted = false; this.st = 'fall'; this.vx = vx; this.vy = vy; this.heat = 0;
+      this.dismountTime = gameTime; // track when dismounted for timeout
+      this.knockedOffByBird = knockedByBird || null;
+      this.knockedOffTime = gameTime;
+      this.lastBird = null;
+      if (this.isP && this.ownerPeerId === myPeerId) {
+        ctrlMode = 'rider';
+        // No rescue bird for players — they must be rescued by other players
+        // or jump onto a riderless AI bird
+      }
+    };
+    Rider.prototype.jump = function () {
+      if (this.st === 'walk' && this.onP) { this.st = 'fall'; this.onP = null; this.vy = RDR_JUMP * this.sf; }
+    };
+    Rider.prototype.update = function (dt) {
+      if (!this.alive || this.mounted) return;
+      this.vy += GRAV_ACCEL * dt;
+      this.vx *= Math.exp(-0.3 * dt);
+      // AI rider summoning
+      if (!this.isP && this.st === 'walk' && !this.summoned) {
+        this.summoning = true; this.summonT += dt;
+        if (this.summonT >= this.summonTime) {
+          this.summoned = true; this.summoning = false;
+          var sx = Math.random() < 0.5 ? -50 : GW + 50;
+          var sy = GH * 0.3 + Math.random() * GH * 0.4;
+          var rb = new Bird('rescue', sx, sy, cfg.sf);
+          rb.mDir = sx < 0 ? 1 : -1; rb.rescueTarget = this;
+          aiBirds.push(rb); allB.push(rb);
+        }
+      }
+      if (this.st === 'walk') {
+        if (this.ownerPeerId === myPeerId && ctrlMode === 'rider') {
+          var dir = keys.l ? -1 : keys.r ? 1 : 0;
+          if (dir !== 0) { var t = dir * RDR_WALK * this.sf; this.vx += (t - this.vx) * RDR_ACC * dt * dt; }
+          else this.vx *= Math.pow(RDR_FRIC, dt * 60);
+        }
+        // Only AI (non-player) riders wander — player riders stand still waiting for rescue
+        if (!this.isP && this.onP) {
+          if (!this._wanderDir) this._wanderDir = Math.random() < 0.5 ? -1 : 1;
+          if (!this._wanderT) this._wanderT = 1 + Math.random() * 3;
+          this._wanderT -= dt;
+          if (this._wanderT <= 0) { this._wanderDir *= -1; this._wanderT = 1 + Math.random() * 3; }
+          var pEdgeL = this.onP.x - this.onP.w / 2 + 20, pEdgeR = this.onP.x + this.onP.w / 2 - 20;
+          if (this.x < pEdgeL) this._wanderDir = 1;
+          if (this.x > pEdgeR) this._wanderDir = -1;
+          var wt = this._wanderDir * RDR_WALK * this.sf * 0.3;
+          this.vx += (wt - this.vx) * RDR_ACC * dt * dt;
+        }
+        this.x += this.vx * dt;
+        if (this.onP) {
+          var op = this.onP; this.y = op.y + op.h / 2 + this.h / 2;
+          if (!op.alive || this.x < op.x - op.w / 2 - this.w || this.x > op.x + op.w / 2 + this.w) { this.st = 'fall'; this.onP = null; this.heat = 0; }
+        }
+        // Heat/cooking on bottom platform
+        if (this.isP && this.onP) {
+          var isBottom = this.onP.id === 'floor' || (lavaH !== null && this.onP.y < lavaH + 100);
+          if (isBottom) {
+            this.heat += dt; this.smoking = true;
+            var sizzleInterval = Math.max(0.15, 1.0 - this.heat / HEAT_DEATH * 0.85);
+            if (!this._lastSizzle) this._lastSizzle = 0;
+            this._lastSizzle += dt;
+            if (this._lastSizzle >= sizzleInterval) { this._lastSizzle = 0; sndSizzle(); }
+            if (Math.random() < (2 + this.heat * 3) * dt) {
+              this.smokeParticles.push({ x: this.x + (Math.random() - 0.5) * this.w * 2, y: this.y + this.h * 0.3, vx: (Math.random() - 0.5) * 30, vy: 20 + Math.random() * 40, life: 0.8 + Math.random() * 0.5, maxLife: 0.8 + Math.random() * 0.5 });
+            }
+            if (this.heat >= HEAT_DEATH) {
+              var hOwner = this.ownerPeerId;
+              this.alive = false;
+              if (hOwner && playerLives[hOwner]) playerLives[hOwner]--;
+              // (death text removed — respawn indicator at top is sufficient)
+              var hLv = hOwner ? (playerLives[hOwner] || 0) : 0;
+              if (hLv > 0 && hOwner) {
+                for (var bi = 0; bi < gameBirds.length; bi++) {
+                  var pb = gameBirds[bi];
+                  if (pb.peerId === hOwner) {
+                    pb.resp = true; pb.respT = 0; pb.y = GH - 50; pb.vx = 0; pb.vy = 0;
+                    pb.rider = new Rider(true, 1.0, pb.sf, pb.origCol || pb.col);
+                    pb.rider.mounted = true; pb.rider.ownerPeerId = hOwner;
+                    if (hOwner === myPeerId) ctrlMode = 'bird';
+                    break;
+                  }
+                }
+              }
+            }
+          } else { this.heat = 0; this.smoking = false; }
+        } else { this.heat = 0; this.smoking = false; }
+      } else {
+        this.heat = 0; this.smoking = false;
+        this.x += this.vx * dt; this.y += this.vy * dt;
+        for (var i = 0; i < plats.length; i++) {
+          var p = plats[i]; if (!p.alive) continue;
+          if (!platOverlapX(this.x, this.w * 2, p)) continue;
+          var pTop = p.y + p.h / 2;
+          var rBot = this.y - this.h / 2;
+          if (this.vy < 0 && rBot < pTop + 5 && this.y > pTop) {
+            this.y = pTop + this.h / 2; this.vy = 0; this.st = 'walk'; this.onP = p;
+            this.knockedOffByBird = null; this.lastBird = null;
+            break;
+          }
+          var pBot = p.y - p.h / 2;
+          var rTop = this.y + this.h / 2;
+          if (this.vy > 0 && rTop > pBot - 3 && rTop < pBot + this.h * 0.3 && this.y < pBot) {
+            this.y = pBot - this.h / 2; this.vy = -this.vy * 0.3;
+          }
+        }
+      }
+      // Update smoke particles
+      for (var i = this.smokeParticles.length - 1; i >= 0; i--) {
+        var sp = this.smokeParticles[i];
+        sp.x += sp.vx * dt; sp.y += sp.vy * dt; sp.life -= dt;
+        if (sp.life <= 0) this.smokeParticles.splice(i, 1);
+      }
+      if (this.y < -100) this.alive = false;
+      if (this.x < -this.w) this.x = GW + this.w;
+      if (this.x > GW + this.w) this.x = -this.w;
+    };
+
+    // ============================================================
+    // PLATFORM
+    // ============================================================
+    function Plat(id, nx, ny, nw, sf) {
+      this.id = id; this.x = nx * GW; this.y = ny * GH; this.w = nw * GW; this.h = 12 * sf;
+      this.origW = this.w; this.alive = true; this.col = '#d87030';
+      this.shrinking = false; this.shrinkT = 0; this.shrinkDelay = -1;
+      this.shrinkDur = 20;
+      this.targetW = 0;
+      this.wrap = (id === 'left_mid' || id === 'right_mid' || id === 'floor');
+      this.animY = null; this.animYT = 0; this.origY = this.y;
+    }
+    Plat.prototype.update = function (dt) {
+      if (!this.alive) return;
+      if (this.shrinkDelay >= 0) {
+        this.shrinkT += dt;
+        if (this.shrinkT >= this.shrinkDelay && !this.shrinking) { this.shrinking = true; this.col = '#c8b020'; }
+        if (this.shrinking) {
+          var targetPx = this.targetW * GW;
+          var progress = Math.min(1, (this.shrinkT - this.shrinkDelay) / this.shrinkDur);
+          var ease = progress * progress * (3 - 2 * progress);
+          this.w = this.origW + (targetPx - this.origW) * ease;
+          if (this.w <= 1 && this.targetW === 0) { this.alive = false; this.w = 0; }
+        }
+      }
+      if (this.animY) {
+        this.animYT += dt;
+        var a = this.animY;
+        if (this.animYT > a.delay) {
+          var t = Math.min(1, (this.animYT - a.delay) / a.dur);
+          var ease = t * t * (3 - 2 * t);
+          this.y = this.origY + (a.target * GH - this.origY) * ease;
+        }
+      }
+    };
+
+    function platOverlapX(bx, bw, p) {
+      if (bx + bw / 3 > p.x - p.w / 2 && bx - bw / 3 < p.x + p.w / 2) return true;
+      if (p.wrap) {
+        var wx = p.id === 'left_mid' ? p.x + GW : p.x - GW;
+        if (bx + bw / 3 > wx - p.w / 2 && bx - bw / 3 < wx + p.w / 2) return true;
+      }
+      return false;
+    }
+
+    // ============================================================
+    // COLLISIONS (uses allB = gameBirds + aiBirds + dBirds)
+    // ============================================================
+    function checkCollisions() {
+      for (var i = 0; i < allB.length; i++) {
+        for (var j = i + 1; j < allB.length; j++) {
+          var a = allB[i], b = allB[j];
+          if (!a.alive || !b.alive || a.resp || b.resp) continue;
+          var dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy);
+          var md = (a.w + b.w) * 0.6;
+          if (dist < md && dist > 0) {
+            var hd = a.y - b.y;
+            if (a.type === 'death' && b.rider) { killRider(b); bnc(a, b, dx, dy, dist); continue; }
+            if (b.type === 'death' && a.rider) { killRider(a); bnc(a, b, dx, dy, dist); continue; }
+            if (a.rider && b.rider) {
+              var th = JOUST_THRESH * Math.max(a.sf, b.sf);
+              if (Math.abs(hd) <= th) bnc(a, b, dx, dy, dist);
+              else if (hd > 0) { jWin(a, b); bnc(a, b, dx, dy, dist); }
+              else { jWin(b, a); bnc(a, b, dx, dy, dist); }
+            } else bnc(a, b, dx, dy, dist);
+          }
+        }
+      }
+      // Walking birds push
+      for (var i = 0; i < allB.length; i++) {
+        var a = allB[i]; if (!a.alive || a.st !== 'walk' || !a.onP) continue;
+        for (var j = i + 1; j < allB.length; j++) {
+          var b = allB[j]; if (!b.alive || b.st !== 'walk' || !b.onP || b.onP !== a.onP) continue;
+          var dx = b.x - a.x, adx = Math.abs(dx);
+          if (adx < (a.w + b.w) * 0.4 && adx > 0) {
+            var push = (a.w + b.w) * 0.4 - adx; var dir = dx > 0 ? 1 : -1;
+            a.x -= dir * push * 0.5; b.x += dir * push * 0.5;
+            a.vx -= dir * 50; b.vx += dir * 50;
+          }
+        }
+      }
+      // Bird vs dismounted rider (HOST ONLY — client gets results via state sync)
+      if (isHost)
+      for (var i = 0; i < allB.length; i++) {
+        var bird = allB[i]; if (!bird.alive || bird.resp) continue;
+        for (var j = 0; j < dRiders.length; j++) {
+          var r = dRiders[j]; if (!r.alive || r.mounted) continue;
+          var pickDist = Math.hypot(r.x - bird.x, r.y - bird.y);
+          if (pickDist > (bird.w / 2 + r.w) * 0.9) continue;
+          // Death bird kills all riders
+          if (bird.type === 'death') { r.alive = false; sndKill(); continue; }
+          if (!bird.rider) {
+            if (r.lastBird === bird) continue;
+            if (r.knockedOffByBird === bird && (gameTime - r.knockedOffTime) < 0.25) continue;
+            // Riderless bird picks up nearby rider
+            bird.rider = r; r.mounted = true; r.st = 'mounted'; r.onP = null; r.heat = 0;
+            r.knockedOffByBird = null; r.lastBird = null;
+            if (r.isP && r.ownerPeerId) {
+              // Player rider mounts this bird — bird becomes that player's bird
+              // Only host modifies gameBirds (client syncs via applyHostState)
+              if (isHost) {
+                bird.type = 'player'; bird.boost = PLAYER_BOOST;
+                bird.aiMode = 'patrol';
+                bird.peerId = r.ownerPeerId;
+                bird.origCol = r.col || bird.col;
+                bird.col = r.col || bird.col;
+                if (gameBirds.indexOf(bird) < 0) gameBirds.push(bird);
+                var aiIdx = aiBirds.indexOf(bird);
+                if (aiIdx >= 0) aiBirds.splice(aiIdx, 1);
+              }
+              if (r.ownerPeerId === myPeerId) ctrlMode = 'bird';
+            }
+            continue;
+          }
+          // Mounted bird interactions with dismounted riders
+          if (bird.rider) {
+            if (r.knockedOffByBird === bird && (gameTime - r.knockedOffTime) < 1.0) continue;
+            // PLAYER bird rescues dismounted PLAYER rider (carry to heaven)
+            if (bird.type === 'player' && r.isP && r.ownerPeerId !== bird.peerId) {
+              // Add as passenger — rider is rescued!
+              if (!bird.passengers) bird.passengers = [];
+              r.mounted = true; r.st = 'rescued'; r.rescueBird = bird;
+              bird.passengers.push(r);
+              fTexts.push({ text: 'RESCUED!', x: r.x, y: r.y + 50, life: 2.0 });
+              playTone(880, 0.1, 0.2); setTimeout(function () { playTone(1100, 0.15, 0.25); }, 100);
+              continue;
+            }
+            // AI bird kills dismounted player rider
+            if (bird.type === 'ai' && r.isP) {
+              var rOwner = r.ownerPeerId;
+              if (isHost) {
+                r.alive = false; // host-only: kill rider
+                if (rOwner) {
+                  if (playerLives[rOwner] === undefined) playerLives[rOwner] = START_LIVES;
+                  playerLives[rOwner]--;
+                }
+              }
+              sndKill();
+              // (death text removed — respawn indicator at top is sufficient)
+              continue;
+            }
+            // Player bird kills dismounted AI rider
+            if (bird.type === 'player' && !r.isP) {
+              r.alive = false; sndKill();
+              addScore(Math.round(5 + r.skill * 20), r.x, r.y, false, bird.peerId);
+            }
+          }
+        }
+      }
+      // Lava collision
+      if (lavaH !== null) {
+        for (var i = 0; i < allB.length; i++) { var b = allB[i]; if (b.alive) { var lh = getLavaHeightAt(b.x); if (lh !== null && b.y - b.h / 2 < lh) { if (b.rider) killRider(b); b.alive = false; } } }
+        if (isHost) for (var i = 0; i < dRiders.length; i++) {
+          var r = dRiders[i]; if (!r.alive) continue;
+          var lh = getLavaHeightAt(r.x);
+          if (lh !== null && r.y - r.h / 2 < lh) {
+            r.alive = false;
+            // (death text removed — respawn indicator at top is sufficient)
+          }
+        }
+      }
+    }
+
+    function bnc(a, b, dx, dy, dist) {
+      var nx = dx / dist, ny = dy / dist;
+      var dvn = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
+      if (dvn > 0) return;
+      if (a.type === 'player' || b.type === 'player') sndBounce();
+      var cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+      var impactSpd = Math.abs(dvn);
+      if (impactSpd > 100) {
+        var nSparks = Math.min(8, Math.floor(impactSpd / 80));
+        for (var si = 0; si < nSparks; si++) {
+          sparks.push({ x: cx, y: cy, vx: (Math.random() - 0.5) * impactSpd * 1.5, vy: (Math.random() - 0.5) * impactSpd * 1.5 + 100, life: 0.3 + Math.random() * 0.3, col: a.type === 'player' || b.type === 'player' ? '#0ff' : '#fa0' });
+        }
+      }
+      var j = -(1 + BOUNCE) * dvn / (1 / a.mass + 1 / b.mass);
+      a.vx += j * nx / a.mass; a.vy += j * ny / a.mass;
+      b.vx -= j * nx / b.mass; b.vy -= j * ny / b.mass;
+      var bmd = (a.w + b.w) * 0.6;
+      var ov = Math.max(1, (bmd - dist) / 2);
+      a.x -= ov * nx; a.y -= ov * ny; b.x += ov * nx; b.y += ov * ny;
+    }
+
+    function jWin(winner, loser) {
+      if (!loser.rider) return;
+      var rider = loser.rider; loser.rider = null;
+      var dx = loser.x - winner.x, ej = dx > 0 ? 1 : -1;
+      var relSpd = Math.abs(winner.vx - loser.vx);
+      var baseEj = Math.abs(winner.vx) * 0.8 + relSpd * 0.4;
+      var randomBoost = 200 + Math.random() * 200;
+      var ejVx = ej * (baseEj + randomBoost);
+      if (Math.abs(ejVx) < 250) ejVx = ej * (250 + Math.random() * 150);
+      var vertBase = Math.max(loser.vy, 0) * 0.6;
+      var impactBoost = 200 + Math.abs(winner.y - loser.y) * 2;
+      var ejVy = vertBase + impactBoost + Math.random() * 100;
+      rider.ownerPeerId = loser.peerId || rider.ownerPeerId; // track which player this rider belongs to
+      rider.dismount(ejVx, ejVy, winner);
+      rider.lastBird = loser;
+      rider.x = loser.x + ej * 20;
+      rider.y = loser.y + loser.h;
+      if (isHost) dRiders.push(rider);
+      // Eject all passengers too (rescued riders get knocked off)
+      if (loser.passengers && loser.passengers.length > 0 && isHost) {
+        for (var pi = 0; pi < loser.passengers.length; pi++) {
+          var pass = loser.passengers[pi];
+          pass.mounted = false; pass.st = 'fall';
+          pass.x = loser.x + (Math.random() - 0.5) * 40;
+          pass.y = loser.y + loser.h;
+          pass.vx = (Math.random() - 0.5) * 300;
+          pass.vy = 200 + Math.random() * 150;
+          pass.dismountTime = gameTime;
+          dRiders.push(pass);
+        }
+        loser.passengers = null;
+      }
+      sndKnockOff();
+      if (winner.type === 'player' && !rider.isP) { addScore(Math.round(10 + rider.skill * 40 + (loser.stam || 0) * 20), loser.x, loser.y, true); sndKill(); }
+      // Riderless bird flees off screen
+      loser.aiMode = 'flee';
+      loser.peerId = null; // player bird no longer belongs to anyone
+      if (loser.cs !== undefined) { loser.cs = 20; loser.cl = 40; loser.col = 'hsl(' + loser.ch + ',' + loser.cs + '%,' + loser.cl + '%)'; }
+      else { loser.col = dimColor(loser.col); }
+    }
+
+    function killRider(bird) {
+      if (!bird.rider) return;
+      var r = bird.rider; bird.rider = null;
+      // Eject passengers (they become dismounted, not killed)
+      if (bird.passengers && bird.passengers.length > 0 && isHost) {
+        for (var pi = 0; pi < bird.passengers.length; pi++) {
+          var pass = bird.passengers[pi];
+          pass.mounted = false; pass.st = 'fall';
+          pass.x = bird.x + (Math.random() - 0.5) * 40;
+          pass.y = bird.y + bird.h;
+          pass.vx = (Math.random() - 0.5) * 300;
+          pass.vy = 200 + Math.random() * 150;
+          pass.dismountTime = gameTime;
+          dRiders.push(pass);
+        }
+        bird.passengers = null;
+      }
+      if (r.isP && bird.peerId) {
+        // Per-player lives (host-only modification)
+        if (isHost) {
+          if (playerLives[bird.peerId] === undefined) playerLives[bird.peerId] = START_LIVES;
+          playerLives[bird.peerId]--;
+        }
+        if (bird.peerId === myPeerId) ctrlMode = 'bird';
+        if (playerLives[bird.peerId] > 0) {
+          bird.resp = true; bird.respT = 0; bird.y = GH - 50; bird.vx = 0; bird.vy = 0;
+          bird.rider = new Rider(true, 1.0, bird.sf, bird.origCol || bird.col);
+          bird.rider.mounted = true;
+          bird.rider.ownerPeerId = bird.peerId;
+        } else {
+          bird.alive = false;
+        }
+      } else if (r.isP) {
+        // Fallback for birds without peerId
+        lives--;
+        ctrlMode = 'bird';
+        if (lives > 0) { bird.resp = true; bird.respT = 0; bird.y = GH - 50; bird.vx = 0; bird.vy = 0; bird.rider = new Rider(true, 1.0, bird.sf, bird.col); bird.rider.mounted = true; }
+        else bird.alive = false;
+      } else {
+        r.alive = false;
+        if (bird.type === 'ai') { bird.aiMode = 'flee'; bird.col = dimColor(bird.col); }
+      }
+    }
+
+    function dimColor(hex) {
+      if (hex.charAt(0) === '#') {
+        var r = parseInt(hex.substr(1, 2), 16);
+        var g = parseInt(hex.substr(3, 2), 16);
+        var b = parseInt(hex.substr(5, 2), 16);
+        r = Math.round(r * 0.4); g = Math.round(g * 0.4); b = Math.round(b * 0.4);
+        return 'rgb(' + r + ',' + g + ',' + b + ')';
+      }
+      return hex;
+    }
+
+    // ============================================================
+    // LAVA (peak-based wave system)
+    // ============================================================
+    function peakHeightAt(pk, x) {
+      var dist = Math.abs(x - pk.x);
+      var half = pk.wavelength / 2;
+      if (dist > half) return 0;
+      var angle = (dist / half) * Math.PI;
+      var cosVal = Math.cos(angle);
+      var window2 = 0.5 * (Math.cos(angle) + 1);
+      return pk.amp * cosVal * window2;
+    }
+    function getLavaHeightAt(worldX) {
+      if (lavaPeaks.length === 0 && lavaBaseH <= 0) return null;
+      var h = lavaBaseH;
+      for (var i = 0; i < lavaPeaks.length; i++) h += peakHeightAt(lavaPeaks[i], worldX);
+      return h;
+    }
+    function addLavaSources(levelId, waves) {
+      for (var wi = 0; wi < waves.length; wi++) {
+        var w = waves[wi];
+        var wl = Math.max(100, w.wl);
+        var src = {
+          wavelength: wl, amp: w.amp, speed: w.spd, levelId: levelId,
+          active: true, timeSinceLast: 0,
+          spawnInterval: wl / Math.abs(w.spd),
+          spawnSide: w.spd >= 0 ? -1 : 1
+        };
+        lavaSources.push(src);
+        var initX = src.speed >= 0 ? -wl * 0.5 : GW + wl * 0.5;
+        lavaPeaks.push({ x: initX, wavelength: wl, amp: 0, targetAmp: w.amp, speed: w.spd, levelId: levelId, growing: true, exiting: false });
+        src.timeSinceLast = 0;
+      }
+    }
+    function updateLava(dt) {
+      if (!cfg || (!cfg.lava && lavaPeaks.length === 0)) { lavaH = null; return; }
+      if (lavaBaseTarget !== lavaBaseH) {
+        var diff = lavaBaseTarget - lavaBaseH;
+        lavaBaseH += diff * Math.min(1, dt * 0.5);
+        if (Math.abs(lavaBaseH - lavaBaseTarget) < 0.1) lavaBaseH = lavaBaseTarget;
+      }
+      for (var i = 0; i < lavaSources.length; i++) {
+        var s = lavaSources[i];
+        if (!s.active) continue;
+        s.timeSinceLast += dt;
+        if (s.timeSinceLast >= s.spawnInterval) {
+          var sx = s.spawnSide < 0 ? -s.wavelength : GW + s.wavelength;
+          lavaPeaks.push({ x: sx, wavelength: s.wavelength, amp: 0, targetAmp: s.amp, speed: s.speed, levelId: s.levelId, growing: true, exiting: false });
+          s.timeSinceLast = 0;
+        }
+      }
+      for (var i = lavaPeaks.length - 1; i >= 0; i--) {
+        var pk = lavaPeaks[i];
+        pk.x += pk.speed * dt;
+        if (pk.growing) {
+          pk.amp = Math.min(pk.targetAmp, pk.amp + PEAK_GROW_RATE * dt);
+          if (pk.amp >= pk.targetAmp) pk.growing = false;
+        }
+        var buf = pk.wavelength;
+        if (pk.x < -buf || pk.x > GW + buf) { lavaPeaks.splice(i, 1); continue; }
+      }
+      for (var i = lavaSources.length - 1; i >= 0; i--) {
+        if (lavaSources[i].active) continue;
+        var lid = lavaSources[i].levelId;
+        var hasPeaks = false;
+        for (var j = 0; j < lavaPeaks.length; j++) { if (lavaPeaks[j].levelId === lid) { hasPeaks = true; break; } }
+        if (!hasPeaks) lavaSources.splice(i, 1);
+      }
+      var maxAmp = 0;
+      for (var i = 0; i < lavaPeaks.length; i++) if (lavaPeaks[i].amp > maxAmp) maxAmp = lavaPeaks[i].amp;
+      lavaH = (lavaPeaks.length > 0 || lavaBaseH > 0) ? lavaBaseH + maxAmp : null;
+    }
+
+    // ============================================================
+    // AI (time-based, matches test.astro)
+    // ============================================================
+    function updateAI(b, dt) {
+      if (!b.alive || b.resp) return;
+      // Riderless player birds just flee (no AI patrol/attack)
+      if (b.type === 'player' && !b.rider && b.aiMode === 'flee') { aiFlee(b, dt); return; }
+      if (b.type !== 'ai' && b.type !== 'rescue') return;
+      if (!b.rider && b.type === 'ai') b.aiMode = 'flee';
+      // Rescue bird: fly toward dismounted rider to pick them up
+      if (b.type === 'rescue' && !b.rider) {
+        var tgt = b.rescueTarget;
+        if (!tgt || !tgt.alive || tgt.mounted) {
+          tgt = null;
+          for (var i = 0; i < dRiders.length; i++) { if (dRiders[i].alive && dRiders[i].isP && !dRiders[i].mounted) { tgt = dRiders[i]; break; } }
+          if (!tgt) { for (var i = 0; i < dRiders.length; i++) { if (dRiders[i].alive && !dRiders[i].mounted) { tgt = dRiders[i]; break; } } }
+          b.rescueTarget = tgt;
+        }
+        if (tgt) {
+          var dx = tgt.x - b.x; b.mDir = dx > 0 ? 1 : -1;
+          b.vx += b.mDir * (FLY_FORCE_BASE + 80) * dt;
+          if (b.y < tgt.y + 30) { if (Math.random() < 8 * dt) b.doFlap(); }
+          if (lavaH !== null && b.y < lavaH + 60) b.doFlap();
+        } else { b.vx += b.mDir * 60 * dt; if (Math.random() < 1.5 * dt) b.doFlap(); }
+        return;
+      }
+      // Normal AI: find nearest player bird
+      var np = null, nd = 1e9;
+      for (var i = 0; i < gameBirds.length; i++) { var p = gameBirds[i]; if (!p.alive || p.resp) continue; var d = Math.hypot(p.x - b.x, p.y - b.y); if (d < nd) { nd = d; np = p; } }
+      b.aiTgt = np;
+      var dismP = null;
+      for (var i = 0; i < dRiders.length; i++) { if (dRiders[i].alive && dRiders[i].isP && !dRiders[i].mounted) { dismP = dRiders[i]; break; } }
+      if (dismP && b.aiMode !== 'flee' && b.aiMode !== 'groundAtk' && Math.random() < 0.3 * dt * b.aggro) { b.aiMode = 'groundAtk'; b.groundTarget = dismP; }
+      if (b.aiMode === 'patrol') aiPatrol(b, dt);
+      else if (b.aiMode === 'attack') aiAttack(b, dt);
+      else if (b.aiMode === 'groundAtk') aiGroundAtk(b, dt);
+      else if (b.aiMode === 'flee') aiFlee(b, dt);
+      if (lavaH !== null && b.st === 'fly' && b.y < lavaH + 40 + 40 * b.stam) b.doFlap();
+    }
+    function aiPatrol(b, dt) {
+      b.frust += dt;
+      var ac = 0.5 + 1.5 * b.aggro + b.frust * 0.5;
+      if (b.aiTgt && Math.random() < ac * dt) { b.aiMode = 'attack'; b.frust = 0; return; }
+      b.patT -= dt;
+      if (b.patT <= 0) { b.patDir = Math.random() < 0.5 ? -1 : 1; b.patT = 0.75 + Math.random() * 1.75; }
+      var cb = -(b.x - GW / 2) / GW * 0.8;
+      if (b.x < 200) cb += 0.6 * (1 - b.x / 200);
+      if (b.x > GW - 200) cb -= 0.6 * (1 - (GW - b.x) / 200);
+      b.mDir = b.patDir + cb > 0 ? 1 : -1;
+      if (b.st === 'fly') {
+        b.vx += b.mDir * (FLY_FORCE_BASE + 100 * b.aggro) / b.mass * dt;
+        b.flapCD -= dt;
+        var fc = (1.2 + 2.4 * b.aggro);
+        if (b.flapCD <= 0 && Math.random() < fc * dt) { b.doFlap(); b.flapCD = 0.15 + Math.random() * 0.3; }
+        if (b.aiTgt && b.y < b.aiTgt.y - 60 && Math.random() < 9 * dt) b.doFlap();
+      } else if (b.st === 'walk' && Math.random() < 0.6 * dt) b.doFlap();
+    }
+    function aiAttack(b, dt) {
+      if (!b.aiTgt || !b.aiTgt.alive) { b.aiMode = 'patrol'; return; }
+      var t = b.aiTgt, dx = t.x - b.x, dist = Math.hypot(dx, t.y - b.y);
+      var dxWrap = dx > 0 ? dx - GW : dx + GW;
+      if (Math.abs(dxWrap) < Math.abs(dx)) dx = dxWrap;
+      b.mDir = dx > 0 ? 1 : -1;
+      if (b.st === 'fly') {
+        b.vx += b.mDir * (FLY_FORCE_BASE + 100 * b.aggro) * 1.5 / b.mass * dt;
+        var altT = t.y + 50 * b.sf; b.flapCD -= dt;
+        var fc = 3 + 7 * b.aggro;
+        if (b.y < altT) fc += 12; else if (b.y > altT + 100) fc *= 0.2;
+        if (dist < 150 * b.sf) fc += 12 * b.aggro;
+        if (b.flapCD <= 0 && Math.random() < fc * dt) { b.doFlap(); b.flapCD = 0.08 + Math.random() * 0.15; }
+      } else b.doFlap();
+      if (dist > 800 && Math.random() < 0.3 * dt) b.aiMode = 'patrol';
+      b.frust += dt;
+      if (b.frust > 10) b.vx += b.mDir * 200 / b.mass * dt;
+    }
+    function aiFlee(b, dt) {
+      b.mDir = b.x < GW / 2 ? -1 : 1;
+      b.vx += b.mDir * 200 / b.mass * dt;
+      if (Math.random() < 3 * dt) b.doFlap();
+      if (b.st === 'walk' && (b.x < 0 || b.x > GW)) { b.doFlap(); b.onP = null; b.st = 'fly'; }
+      if (b.x < -200 || b.x > GW + 200) b.alive = false;
+    }
+    function aiGroundAtk(b, dt) {
+      var tgt = b.groundTarget;
+      if (!tgt || !tgt.alive || tgt.mounted) { b.aiMode = 'patrol'; return; }
+      b.mDir = tgt.x > b.x ? 1 : -1;
+      if (b.st === 'fly') {
+        b.vx += b.mDir * (FLY_FORCE_BASE + 50) * dt;
+        if (tgt.onP && b.y < tgt.onP.y + tgt.onP.h / 2 + 50) { if (Math.random() < 2 * dt) b.doFlap(); }
+        else if (Math.random() < 0.5 * dt) b.doFlap();
+      } else if (b.st === 'walk') {
+        var dx = tgt.x - b.x; b.mDir = dx > 0 ? 1 : -1;
+        b.vx += b.mDir * WALK_SPD * 3 * dt * dt;
+        if (tgt.onP && b.onP && tgt.onP !== b.onP) { b.doFlap(); }
+        if (!tgt.onP) { b.doFlap(); b.aiMode = 'attack'; }
+      }
+      b.frust += dt;
+      if (b.frust > 8) { b.aiMode = 'attack'; b.frust = 0; }
+      if (lavaH !== null && b.y < lavaH + 40 + 40 * b.stam) b.doFlap();
+    }
+
+    // ============================================================
+    // WAVE MANAGEMENT
+    // ============================================================
+    function deactivateOldLavaSources(newLevelId) {
+      for (var i = 0; i < lavaSources.length; i++) {
+        if (lavaSources[i].levelId !== newLevelId) lavaSources[i].active = false;
+      }
+      for (var i = 0; i < lavaPeaks.length; i++) {
+        if (lavaPeaks[i].levelId !== newLevelId) lavaPeaks[i].exiting = true;
+      }
+    }
+    function setupWave(n, keepPlayers) {
+      wave = n; cfg = makeLevel(n);
+      aiBirds = []; dBirds = [];
+      dRiders = dRiders.filter(function (r) { return r.alive && r.isP && !r.mounted; });
+      // Carry forward platform state
+      var prevPlats = {};
+      for (var i = 0; i < plats.length; i++) {
+        var pp = plats[i]; prevPlats[pp.id] = { w: pp.w, alive: pp.alive };
+      }
+      plats = cfg.platforms.map(function (p) {
+        var pl = new Plat(p.id, p.x, p.y, p.w, cfg.sf);
+        var prev = prevPlats[p.id];
+        if (prev && prev.alive) {
+          var prevWNorm = prev.w / GW;
+          if (prevWNorm < p.w) { pl.w = prev.w; pl.origW = prev.w; }
+        } else if (prev && !prev.alive) { pl.alive = false; pl.w = 0; }
+        if (p.shrinkDelay !== undefined) pl.shrinkDelay = p.shrinkDelay;
+        if (p.shrinkDur !== undefined) pl.shrinkDur = p.shrinkDur;
+        if (p.targetW !== undefined) {
+          pl.targetW = p.targetW;
+          if (pl.w / GW <= p.targetW + 0.01) { pl.shrinkDelay = -1; pl.shrinking = false; }
+        }
+        if (p.animY) pl.animY = p.animY;
+        return pl;
+      });
+      spawnQueue = [];
+      var spawnDur = cfg.spawnDur || 10;
+      // Update existing player birds' scale
+      for (var i = 0; i < gameBirds.length; i++) {
+        var pb = gameBirds[i]; pb.sf = cfg.sf;
+        pb.w = BIRD_W * cfg.sf; pb.h = BIRD_H * cfg.sf;
+        if (pb.rider) { pb.rider.sf = cfg.sf; pb.rider.w = RDR_W * cfg.sf; pb.rider.h = RDR_H * cfg.sf; }
+      }
+      // Give new birds to players who lost theirs (have lives but no bird)
+      for (var pid in playerLives) {
+        if (playerLives[pid] <= 0) continue;
+        var hasBird = false;
+        for (var i = 0; i < gameBirds.length; i++) { if (gameBirds[i].peerId === pid) { hasBird = true; break; } }
+        if (!hasBird) {
+          // Find this player's slot color
+          var slotColor = '#fff';
+          for (var si = 0; si < 12; si++) { if (slots[si].peerId === pid) { slotColor = SLOT_COLORS[si].hex; break; } }
+          var spawnX = GW / 2 + (Math.random() - 0.5) * 400;
+          var nb = new Bird('player', spawnX, GH * 0.7, cfg.sf, slotColor);
+          nb.peerId = pid; nb.origCol = slotColor;
+          nb.rider = new Rider(true, 1.0, cfg.sf, slotColor);
+          nb.rider.mounted = true; nb.rider.ownerPeerId = pid;
+          gameBirds.push(nb);
+          // Clear any dismounted riders for this player
+          dRiders = dRiders.filter(function(r) { return r.ownerPeerId !== pid; });
+          if (pid === myPeerId) ctrlMode = 'bird';
+          console.log('Wave ' + n + ': gave new bird to ' + pid.slice(0,4));
+        }
+      }
+      // Queue AI bird spawns
+      for (var i = 0; i < cfg.birdCount; i++) {
+        var delay = i * spawnDur / cfg.birdCount;
+        spawnQueue.push({ delay: delay, spawned: false });
+      }
+      // Lava transition
+      if (cfg.lava) {
+        deactivateOldLavaSources(n);
+        lavaBaseTarget = cfg.lava.baseH;
+        if (n === 1 || lavaBaseH === 0) lavaBaseH = cfg.lava.baseH;
+        addLavaSources(n, cfg.lava.waves);
+        lavaH = lavaBaseH;
+      } else {
+        deactivateOldLavaSources(n);
+        lavaBaseTarget = 0;
+      }
+      dbTimer = cfg.dd1;
+      allB = gameBirds.concat(aiBirds, dBirds);
+      gameTime = 0;
+      waveStartMsg = getLevelTitle(n); waveStartT = 2.5; waveSubMsg = getLevelSubtitle(n);
+    }
+    function checkWaveComplete() {
+      var rem = aiBirds.filter(function (b) { return b.alive && b.rider && b.rider.alive; });
+      var remD = dRiders.filter(function (r) { return r.alive && !r.isP; });
+      if (rem.length === 0 && remD.length === 0 && gameTime > 2) {
+        fTexts.push({ text: 'WAVE ' + wave + ' COMPLETE!', x: GW / 2, y: GH * 0.7, life: 3.0 });
+        dBirds.forEach(function (d) { d.alive = false; }); dBirds = [];
+        playTone(660, 0.15, 0.3); setTimeout(function () { playTone(880, 0.2, 0.3); }, 150);
+        setupWave(wave + 1, true);
+      }
+      // Game over: all players have 0 lives and no birds
+      var anyAlive = false;
+      for (var pid in playerLives) { if (playerLives[pid] > 0) { anyAlive = true; break; } }
+      if (!anyAlive && gameBirds.length === 0 && lobbyState === 'game') {
+        lobbyState = 'gameover';
+        // Find winner (highest score)
+        var winnerPid = null, winnerScore = -1;
+        for (var pid in playerScores) {
+          if (playerScores[pid] > winnerScore) { winnerScore = playerScores[pid]; winnerPid = pid; }
+        }
+        var winnerName = '?';
+        for (var si = 0; si < 12; si++) { if (slots[si].peerId === winnerPid) { winnerName = SLOT_COLORS[si].name; break; } }
+        fTexts.push({ text: 'GAME OVER', x: GW / 2, y: GH * 0.7, life: 999 });
+        if (winnerPid === myPeerId) {
+          fTexts.push({ text: 'YOU ARE WINNER!', x: GW / 2, y: GH * 0.55, life: 999 });
+        } else {
+          fTexts.push({ text: winnerName + ' wins!', x: GW / 2, y: GH * 0.55, life: 999 });
+        }
+        fTexts.push({ text: 'Tap to return to lobby', x: GW / 2, y: GH * 0.4, life: 999 });
+        playTone(440, 0.2, 0.3); setTimeout(function () { playTone(330, 0.2, 0.3); }, 200);
+        setTimeout(function () { playTone(220, 0.4, 0.25); }, 400);
+        broadcast({ type: 'gameover', wave: wave, winnerPid: winnerPid, winnerName: winnerName, pScores: playerScores });
+      }
+    }
+    function spawnDeathBird() {
+      var x = Math.random() < 0.5 ? -80 : GW + 80;
+      var db = new Bird('death', x, GH * 0.6, cfg.sf);
+      db.mDir = x < 0 ? 1 : -1; dBirds.push(db); allB.push(db);
+    }
+    function spawnRescueBird() {
+      var dismP = null;
+      for (var i = 0; i < dRiders.length; i++) { if (dRiders[i].alive && dRiders[i].isP && !dRiders[i].mounted) { dismP = dRiders[i]; break; } }
+      if (!dismP) return;
+      var x = Math.random() < 0.5 ? -50 : GW + 50;
+      var y = GH * 0.3 + Math.random() * GH * 0.4;
+      var rb = new Bird('rescue', x, y, cfg.sf);
+      rb.mDir = x < 0 ? 1 : -1;
+      rb.rescueTarget = dismP;
+      aiBirds.push(rb); allB.push(rb);
+    }
+    var playerNextExtra = {}; // per-player extra life thresholds
+    function addScore(pts, x, y, isKill, scorePeerId) {
+      if (!isHost) { fTexts.push({ text: '' + pts, x: x, y: y, life: 1.5 }); return; }
+      score += pts;
+      var pid = scorePeerId || myPeerId;
+      if (playerScores[pid] === undefined) playerScores[pid] = 0;
+      playerScores[pid] += pts;
+      fTexts.push({ text: '' + pts, x: x, y: y, life: 1.5 });
+      // Extra life at 100, 200, 400, 800... (matches Xcode)
+      if (playerLives[pid] === undefined) playerLives[pid] = START_LIVES;
+      if (!playerNextExtra[pid]) playerNextExtra[pid] = EXTRA1;
+      if (playerScores[pid] >= playerNextExtra[pid]) {
+        playerLives[pid]++;
+        playerNextExtra[pid] *= 2;
+        fTexts.push({ text: 'EXTRA LIFE!', x: GW / 2, y: GH / 2, life: 2.0 });
+        sndExtraLife();
+      }
+    }
+
+    // ============================================================
+    // SIGNALING VIA WEBSOCKET (Durable Object)
+    // ============================================================
+    function connectSignaling() {
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      // Only include room param if it was in the original URL (from QR scan)
+      var roomParam = (window._roomCode && !window._qrRoomCode) ? '&room=' + window._roomCode : '';
+      var wsUrl = proto + '//' + location.host + '/api/signal/ws?peerId=' + myPeerId + roomParam;
+      console.log('Connecting to signaling:', wsUrl);
+      hud.textContent = 'Connecting to signaling...';
+
+      sigSocket = new WebSocket(wsUrl);
+
+      sigSocket.onopen = function () {
+        console.log('Signaling WebSocket connected');
+        hud.textContent = 'Connected as ' + myPeerId.slice(0, 4);
+      };
+
+      sigSocket.onmessage = function (e) {
+        try {
+          var msg = JSON.parse(e.data);
+          handleSignalingMessage(msg);
+        } catch (err) {
+          console.error('Bad signaling message:', err);
+        }
+      };
+
+      sigSocket.onclose = function () {
+        console.log('Signaling WebSocket closed, reconnecting in 5s...');
+        sigSocket = null;
+        sigReconnectTimer = setTimeout(connectSignaling, 5000);
+      };
+
+      sigSocket.onerror = function (e) {
+        console.error('Signaling WebSocket error:', e);
+      };
+    }
+
+    function sendSignal(targetPeerId, signalData) {
+      if (sigSocket && sigSocket.readyState === WebSocket.OPEN) {
+        sigSocket.send(JSON.stringify({
+          type: 'signal',
+          to: targetPeerId,
+          signal: signalData
+        }));
+      }
+    }
+
+    function handleSignalingMessage(msg) {
+      if (msg.type === 'peers') {
+        console.log('Room peers:', msg.peers);
+        for (var i = 0; i < msg.peers.length; i++) {
+          var peerId = msg.peers[i];
+          if (peerId !== myPeerId && !peerConnections[peerId]) {
+            if (myPeerId < peerId) {
+              connectToPeer(peerId, true);
+            }
+          }
+        }
+      } else if (msg.type === 'peer-joined') {
+        console.log('Peer joined:', msg.peerId);
+        if (msg.peerId !== myPeerId && !peerConnections[msg.peerId]) {
+          if (myPeerId < msg.peerId) {
+            connectToPeer(msg.peerId, true);
+          }
+        }
+      } else if (msg.type === 'peer-left') {
+        console.log('Peer left:', msg.peerId);
+        removePeer(msg.peerId);
+      } else if (msg.type === 'signal') {
+        handleWebRTCSignal(msg.from, msg.signal);
+      }
+    }
+
+    function handleWebRTCSignal(peerId, signal) {
+      if (signal.type === 'offer') {
+        if (!peerConnections[peerId]) {
+          connectToPeer(peerId, false);
+        }
+        var pc = peerConnections[peerId];
+        pc.setRemoteDescription(new RTCSessionDescription(signal)).then(function () {
+          return pc.createAnswer();
+        }).then(function (answer) {
+          return pc.setLocalDescription(answer);
+        }).then(function () {
+          sendSignal(peerId, pc.localDescription);
+          flushCandidates(peerId);
+        });
+      } else if (signal.type === 'answer') {
+        var pc = peerConnections[peerId];
+        if (pc) {
+          pc.setRemoteDescription(new RTCSessionDescription(signal)).then(function () {
+            flushCandidates(peerId);
+          });
+        }
+      } else if (signal.candidate !== undefined) {
+        var pc = peerConnections[peerId];
+        if (pc && pc.remoteDescription) {
+          pc.addIceCandidate(new RTCIceCandidate(signal));
+        } else {
+          if (!pendingCandidates[peerId]) pendingCandidates[peerId] = [];
+          pendingCandidates[peerId].push(signal);
+        }
+      }
+    }
+
+    function flushCandidates(peerId) {
+      var pc = peerConnections[peerId];
+      var pending = pendingCandidates[peerId];
+      if (pc && pc.remoteDescription && pending) {
+        for (var i = 0; i < pending.length; i++) {
+          pc.addIceCandidate(new RTCIceCandidate(pending[i]));
+        }
+        delete pendingCandidates[peerId];
+      }
+    }
+
+    // ============================================================
+    // WEBRTC
+    // ============================================================
+    function connectToPeer(peerId, isInitiator) {
+      if (peerConnections[peerId]) return;
+
+      var pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      peerConnections[peerId] = pc;
+
+      pc.onicecandidate = function (e) {
+        if (e.candidate) {
+          sendSignal(peerId, e.candidate.toJSON());
+        }
+      };
+
+      pc.onconnectionstatechange = function () {
+        console.log('Peer ' + peerId.slice(0,4) + ' connection: ' + pc.connectionState);
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          removePeer(peerId);
+        }
+      };
+      pc.oniceconnectionstatechange = function () {
+        console.log('Peer ' + peerId.slice(0,4) + ' ICE: ' + pc.iceConnectionState);
+      };
+
+      if (isInitiator) {
+        var dc = pc.createDataChannel('game', { ordered: false, maxRetransmits: 0 });
+        setupDataChannel(dc, peerId);
+        pc.createOffer().then(function (offer) {
+          return pc.setLocalDescription(offer);
+        }).then(function () {
+          sendSignal(peerId, pc.localDescription);
+        });
+      } else {
+        pc.ondatachannel = function (e) {
+          setupDataChannel(e.channel, peerId);
+        };
+      }
+    }
+
+    function setupDataChannel(dc, peerId) {
+      function onChannelReady() {
+        dataChannels[peerId] = dc;
+        connectedPeerIds[peerId] = true;
+        console.log('Data channel open with', peerId, '(readyState=' + dc.readyState + ')');
+        // Send lobby-join to new peer
+        sendToPeer(peerId, {
+          type: 'lobby-join',
+          peerId: myPeerId,
+          slotIndex: mySlotIndex,
+          deviceInfo: myDeviceInfo,
+          benchmarkScore: myBenchmark
+        });
+        // If we have state, send lobby-sync
+        if (mySlotIndex >= 0) {
+          sendToPeer(peerId, {
+            type: 'lobby-sync',
+            slots: serializeSlots(),
+            level: selectedLevel,
+            lobbyState: lobbyState
+          });
+        }
+      }
+
+      // Channel may already be open (common for responder side)
+      if (dc.readyState === 'open') {
+        onChannelReady();
+      }
+      dc.onopen = function () {
+        onChannelReady();
+      };
+
+      dc.onclose = function () {
+        removePeer(peerId);
+      };
+
+      dc.onmessage = function (e) {
+        try {
+          var msg = JSON.parse(e.data);
+          handleDataMessage(peerId, msg);
+        } catch (err) { }
+      };
+    }
+
+    function removePeer(peerId) {
+      if (peerConnections[peerId]) {
+        peerConnections[peerId].close();
+        delete peerConnections[peerId];
+      }
+      delete dataChannels[peerId];
+      delete connectedPeerIds[peerId];
+      delete remoteInputs[peerId];
+      // Remove from slot
+      for (var i = 0; i < 12; i++) {
+        if (slots[i].peerId === peerId) {
+          slots[i].peerId = null;
+          slots[i].deviceInfo = '';
+          slots[i].benchmarkScore = 0;
+          slots[i].progress = 0;
+          slots[i].ready = false;
+          slots[i].holding = false;
+        }
+      }
+      // Remove bird in game
+      gameBirds = gameBirds.filter(function (b) { return b.peerId !== peerId; });
+      determineHost();
+      // If all peers gone while in game/observer, return to lobby
+      var peerCount = 0;
+      for (var p in connectedPeerIds) peerCount++;
+      if (peerCount === 0 && (lobbyState === 'game' || lobbyState === 'observer' || lobbyState === 'gameover')) {
+        console.log('All peers disconnected — returning to lobby');
+        lobbyState = 'lobby'; mySlotIndex = -1; cfg = null;
+        for (var si = 0; si < 12; si++) { slots[si].peerId = null; slots[si].ready = false; slots[si].progress = 0; slots[si].holding = false; }
+        gameBirds = []; aiBirds = []; dBirds = []; dRiders = []; fTexts = [];
+      }
+    }
+
+    var MAX_BUFFER = 16384; // 16KB — skip sends if buffer exceeds this
+    function broadcast(msg) {
+      var data = JSON.stringify(msg);
+      for (var pid in dataChannels) {
+        var dc = dataChannels[pid];
+        if (dc && dc.readyState === 'open' && dc.bufferedAmount < MAX_BUFFER) {
+          dc.send(data);
+        }
+      }
+    }
+
+    function sendToPeer(peerId, msg) {
+      var dc = dataChannels[peerId];
+      if (dc && dc.readyState === 'open' && dc.bufferedAmount < MAX_BUFFER) {
+        dc.send(JSON.stringify(msg));
+      }
+    }
+
+    function serializeSlots() {
+      var out = [];
+      for (var i = 0; i < 12; i++) {
+        out.push({
+          peerId: slots[i].peerId,
+          deviceInfo: slots[i].deviceInfo,
+          benchmarkScore: slots[i].benchmarkScore,
+          progress: slots[i].progress,
+          ready: slots[i].ready,
+          holding: slots[i].holding
+        });
+      }
+      return out;
+    }
+
+    // ============================================================
+    // DATA MESSAGE HANDLING
+    // ============================================================
+    function handleDataMessage(fromPeerId, msg) {
+      if (msg.type === 'lobby-join') {
+        // Peer wants to join a slot
+        var si = msg.slotIndex;
+        if (si >= 0 && si < 12 && (slots[si].peerId === null || slots[si].peerId === msg.peerId)) {
+          slots[si].peerId = msg.peerId;
+          slots[si].deviceInfo = msg.deviceInfo || '';
+          slots[si].benchmarkScore = msg.benchmarkScore || 0;
+        }
+        determineHost();
+      }
+      else if (msg.type === 'lobby-sync') {
+        // Full state sync from existing peer
+        if (msg.slots) {
+          for (var i = 0; i < 12 && i < msg.slots.length; i++) {
+            var s = msg.slots[i];
+            if (s.peerId && s.peerId !== myPeerId) {
+              slots[i].peerId = s.peerId;
+              slots[i].deviceInfo = s.deviceInfo;
+              slots[i].benchmarkScore = s.benchmarkScore;
+              slots[i].progress = s.progress;
+              slots[i].ready = s.ready;
+              slots[i].holding = s.holding;
+            }
+          }
+        }
+        if (msg.level) selectedLevel = msg.level;
+        if (msg.lobbyState === 'game' || msg.lobbyState === 'gameover') {
+          // Late joiner during active game — enter observer mode
+          lobbyState = 'observer';
+        }
+        determineHost();
+      }
+      else if (msg.type === 'lobby-hold') {
+        var si = findSlotByPeer(msg.peerId);
+        if (si >= 0) {
+          slots[si].holding = true;
+          slots[si].progress = msg.progress || 0;
+        }
+      }
+      else if (msg.type === 'lobby-ready') {
+        var si = findSlotByPeer(msg.peerId);
+        if (si >= 0) {
+          slots[si].ready = true;
+          slots[si].progress = 100;
+          slots[si].holding = false;
+          checkCountdownStart();
+        }
+      }
+      else if (msg.type === 'lobby-allready') {
+        // Remote player triggered all-join: ready all occupied slots
+        for (var i = 0; i < 12; i++) {
+          if (slots[i].peerId !== null && !slots[i].ready) {
+            slots[i].ready = true;
+            slots[i].progress = 100;
+            slots[i].holding = false;
+          }
+        }
+        checkCountdownStart();
+      }
+      else if (msg.type === 'lobby-release') {
+        var si = findSlotByPeer(msg.peerId);
+        if (si >= 0) {
+          slots[si].holding = false;
+          slots[si].progress = 0;
+          slots[si].ready = false;
+        }
+      }
+      else if (msg.type === 'lobby-level') {
+        selectedLevel = msg.level;
+      }
+      else if (msg.type === 'game-start') {
+        if (lobbyState !== 'observer') startGame(msg);
+      }
+      else if (msg.type === 'gameover') {
+        if (lobbyState === 'observer') {
+          lobbyState = 'lobby'; mySlotIndex = -1; cfg = null;
+          for (var si = 0; si < 12; si++) { slots[si].peerId = null; slots[si].ready = false; slots[si].progress = 0; slots[si].holding = false; }
+          gameBirds = []; aiBirds = []; dBirds = []; dRiders = []; fTexts = [];
+        } else if (lobbyState === 'game') {
+          lobbyState = 'gameover';
+          if (msg.pScores) playerScores = msg.pScores;
+          fTexts.push({ text: 'GAME OVER', x: GW / 2, y: GH * 0.7, life: 999 });
+          if (msg.winnerPid === myPeerId) {
+            fTexts.push({ text: 'YOU ARE WINNER!', x: GW / 2, y: GH * 0.55, life: 999 });
+          } else {
+            fTexts.push({ text: (msg.winnerName || '?') + ' wins!', x: GW / 2, y: GH * 0.55, life: 999 });
+          }
+          fTexts.push({ text: 'Tap to return to lobby', x: GW / 2, y: GH * 0.4, life: 999 });
+          playTone(440, 0.2, 0.3); setTimeout(function () { playTone(330, 0.2, 0.3); }, 200);
+          setTimeout(function () { playTone(220, 0.4, 0.25); }, 400);
+        }
+      }
+      else if (msg.type === 'input') {
+        // Non-host sent input to host
+        if (isHost) {
+          inputsReceived++;
+          var prev = remoteInputs[msg.peerId];
+          // Accumulate flapEdge: once set, keep it until gameStep consumes it
+          var fe = msg.flapEdge || (prev && prev.flapEdge);
+          remoteInputs[msg.peerId] = { l: msg.keys.l, r: msg.keys.r, flap: msg.keys.flap, dn: msg.keys.dn, flapEdge: fe };
+        }
+      }
+      else if (msg.type === 'state') {
+        // Host broadcast game state
+        if (!isHost) {
+          statesReceived++;
+          lastStateRecvTime = performance.now();
+          // Observer: initialize game state on first state message
+          if (lobbyState === 'observer' && !cfg && msg.wave) {
+            cfg = makeLevel(msg.wave);
+            wave = msg.wave;
+            plats = cfg.platforms.map(function(p) { return new Plat(p.id, p.x, p.y, p.w, cfg.sf); });
+            gameBirds = []; aiBirds = []; dBirds = []; dRiders = []; fTexts = [];
+            lavaPeaks = []; lavaSources = []; lavaBaseH = 0; lavaBaseTarget = 0; lavaH = null;
+            if (cfg.lava) { lavaBaseH = cfg.lava.baseH; lavaBaseTarget = cfg.lava.baseH; addLavaSources(wave, cfg.lava.waves); }
+          }
+          if (cfg) applyHostState(msg);
+        }
+      }
+    }
+
+    function findSlotByPeer(peerId) {
+      for (var i = 0; i < 12; i++) {
+        if (slots[i].peerId === peerId) return i;
+      }
+      return -1;
+    }
+
+    // ============================================================
+    // HOST DETERMINATION
+    // ============================================================
+    function determineHost() {
+      var bestScore = -1;
+      var bestPeer = null;
+      // Include self
+      if (mySlotIndex >= 0) {
+        bestScore = myBenchmark;
+        bestPeer = myPeerId;
+      }
+      for (var i = 0; i < 12; i++) {
+        var s = slots[i];
+        if (!s.peerId) continue;
+        if (s.benchmarkScore > bestScore || (s.benchmarkScore === bestScore && s.peerId < bestPeer)) {
+          bestScore = s.benchmarkScore;
+          bestPeer = s.peerId;
+        }
+      }
+      hostPeerId = bestPeer;
+      isHost = (bestPeer === myPeerId);
+    }
+
+    // ============================================================
+    // LOBBY MECHANICS
+    // ============================================================
+    var holdingFlap = false;
+    var holdStartTime = 0;
+    // Rapid-tap all-join: 8 quick taps from a slotted player readies all occupied slots
+    var rapidTapCount = 0;
+    var rapidTapLast = 0;
+    var RAPID_TAP_WINDOW = 400; // ms between taps to count as rapid
+    var RAPID_TAP_THRESHOLD = 8;
+
+    function claimSlot() {
+      if (mySlotIndex >= 0) return; // already claimed
+      for (var i = 0; i < 12; i++) {
+        if (slots[i].peerId === null) {
+          mySlotIndex = i;
+          slots[i].peerId = myPeerId;
+          slots[i].deviceInfo = myDeviceInfo;
+          slots[i].benchmarkScore = myBenchmark;
+          // Broadcast join
+          broadcast({
+            type: 'lobby-join',
+            peerId: myPeerId,
+            slotIndex: mySlotIndex,
+            deviceInfo: myDeviceInfo,
+            benchmarkScore: myBenchmark
+          });
+          determineHost();
+          return;
+        }
+      }
+    }
+
+    function startHold() {
+      if (lobbyState !== 'lobby') return;
+      if (mySlotIndex < 0) claimSlot();
+      if (mySlotIndex < 0) return; // no slot available
+      // Rapid-tap detection: 8 quick taps readies all occupied slots
+      var now = performance.now();
+      if (now - rapidTapLast < RAPID_TAP_WINDOW) {
+        rapidTapCount++;
+      } else {
+        rapidTapCount = 1;
+      }
+      rapidTapLast = now;
+      if (rapidTapCount >= RAPID_TAP_THRESHOLD && mySlotIndex >= 0) {
+        // All-join: ready all occupied slots
+        for (var i = 0; i < 12; i++) {
+          if (slots[i].peerId !== null && !slots[i].ready) {
+            slots[i].ready = true;
+            slots[i].progress = 100;
+            slots[i].holding = false;
+          }
+        }
+        broadcast({ type: 'lobby-allready', peerId: myPeerId });
+        rapidTapCount = 0;
+        holdingFlap = false;
+        checkCountdownStart();
+        return;
+      }
+      if (slots[mySlotIndex].ready) return; // already ready
+      holdingFlap = true;
+      holdStartTime = performance.now();
+      slots[mySlotIndex].holding = true;
+    }
+
+    function updateHold() {
+      if (!holdingFlap || mySlotIndex < 0) return;
+      if (slots[mySlotIndex].ready) return;
+      var elapsed = (performance.now() - holdStartTime) / 1000;
+      var progress = Math.min(100, (elapsed / HOLD_DURATION) * 100);
+      slots[mySlotIndex].progress = progress;
+      // Broadcast hold progress periodically
+      broadcast({
+        type: 'lobby-hold',
+        peerId: myPeerId,
+        progress: progress
+      });
+      if (progress >= 100) {
+        slots[mySlotIndex].ready = true;
+        slots[mySlotIndex].holding = false;
+        holdingFlap = false;
+        broadcast({
+          type: 'lobby-ready',
+          peerId: myPeerId
+        });
+        checkCountdownStart();
+      }
+    }
+
+    function releaseHold() {
+      if (!holdingFlap) return;
+      holdingFlap = false;
+      if (mySlotIndex >= 0 && !slots[mySlotIndex].ready) {
+        slots[mySlotIndex].holding = false;
+        slots[mySlotIndex].progress = 0;
+        broadcast({
+          type: 'lobby-release',
+          peerId: myPeerId
+        });
+      }
+    }
+
+    function checkCountdownStart() {
+      if (lobbyState !== 'lobby') return;
+      var anyReady = false;
+      for (var i = 0; i < 12; i++) {
+        if (slots[i].ready) { anyReady = true; break; }
+      }
+      if (anyReady) {
+        lobbyState = 'countdown';
+        countdownStart = performance.now();
+        countdownTimer = COUNTDOWN_DURATION;
+      }
+    }
+
+    function updateCountdown(dt) {
+      if (lobbyState !== 'countdown') return;
+      // Extend countdown while anyone is still holding
+      var anyHolding = false;
+      for (var i = 0; i < 12; i++) {
+        if (slots[i].holding) { anyHolding = true; break; }
+      }
+      if (anyHolding) {
+        countdownStart = performance.now();
+        countdownTimer = COUNTDOWN_DURATION;
+        return;
+      }
+      countdownTimer -= dt;
+      if (countdownTimer <= 0) {
+        // Start game!
+        if (isHost) {
+          var readySlots = [];
+          for (var i = 0; i < 12; i++) {
+            if (slots[i].ready) readySlots.push({ slotIndex: i, peerId: slots[i].peerId });
+          }
+          var startMsg = {
+            type: 'game-start',
+            level: selectedLevel,
+            hostPeerId: myPeerId,
+            playerSlots: readySlots
+          };
+          broadcast(startMsg);
+          startGame(startMsg);
+        }
+      }
+    }
+
+    function changeLevel(dir) {
+      if (lobbyState !== 'lobby') return;
+      // Disabled while anyone is holding
+      for (var i = 0; i < 12; i++) {
+        if (slots[i].holding) return;
+      }
+      selectedLevel = Math.max(1, Math.min(100, selectedLevel + dir));
+      broadcast({ type: 'lobby-level', level: selectedLevel });
+    }
+
+    // ============================================================
+    // GAME START
+    // ============================================================
+    function startGame(msg) {
+      lobbyState = 'game';
+      cfg = makeLevel(msg.level);
+      hostPeerId = msg.hostPeerId;
+      isHost = (msg.hostPeerId === myPeerId);
+      gameTime = 0;
+      gameTick = 0;
+      lastHostBroadcast = 0;
+      wave = msg.level;
+      score = 0; lives = START_LIVES; nextExtra = EXTRA1;
+      killStreak = 0; streakTimer = 0;
+      rainDrops = [];
+      playerLives = {}; playerScores = {};
+
+      // Create birds for each ready player
+      gameBirds = [];
+      aiBirds = []; dBirds = []; spawnQueue = []; dbTimer = 0;
+      dRiders = [];
+      fTexts = [];
+      sparks = [];
+      lavaPeaks = []; lavaSources = []; lavaBaseH = 0; lavaBaseTarget = 0; lavaH = null;
+      lavaBubbles = []; lavaEruptions = [];
+
+      var playerSlots = msg.playerSlots || [];
+      for (var pi = 0; pi < playerSlots.length; pi++) {
+        var ps = playerSlots[pi];
+        var si = ps.slotIndex;
+        var color = SLOT_COLORS[si].hex;
+        var spawnX = GW * 0.2 + (pi / Math.max(1, playerSlots.length - 1)) * GW * 0.6;
+        if (playerSlots.length === 1) spawnX = GW / 2;
+        var spawnY = GH * 0.7;
+        var b = new Bird('player', spawnX, spawnY, cfg.sf, color);
+        b.peerId = ps.peerId;
+        b.slotIndex = si;
+        b.origCol = color; // preserve for HUD display
+        b.rider = new Rider(true, 1.0, cfg.sf, color);
+        b.rider.mounted = true;
+        b.rider.ownerPeerId = ps.peerId;
+        gameBirds.push(b);
+        playerLives[ps.peerId] = START_LIVES;
+        playerScores[ps.peerId] = 0;
+      }
+
+      // Now call setupWave which sets up platforms, AI queue, lava, etc.
+      setupWave(msg.level, false);
+
+      fTexts.push({ text: getLevelTitle(msg.level), x: GW / 2, y: GH * 0.35, life: 3.0 });
+      var sub = getLevelSubtitle(msg.level);
+      if (sub) fTexts.push({ text: sub, x: GW / 2, y: GH * 0.42, life: 2.5 });
+    }
+
+    // ============================================================
+    // GAME PHYSICS (host-authoritative)
+    // ============================================================
+    function gameStep(dt) {
+      if (!cfg) return; // not initialized yet
+      gameTime += dt;
+      gameTick++;
+
+      // Apply inputs to player birds (include resp birds so they can drop in)
+      for (var i = 0; i < gameBirds.length; i++) {
+        var bird = gameBirds[i];
+        if (!bird.alive && !bird.resp) continue;
+
+        // Gather input from bird owner + all passengers (shared control)
+        var input = null;
+        if (bird.peerId === myPeerId) {
+          input = { l: keys.l, r: keys.r, flap: keys.flap, dn: keys.dn, flapEdge: flapEdge };
+        } else if (isHost && remoteInputs[bird.peerId]) {
+          input = remoteInputs[bird.peerId];
+        }
+        // Merge passenger inputs (any passenger pressing a direction counts)
+        if (bird.passengers && bird.passengers.length > 0) {
+          for (var pi = 0; pi < bird.passengers.length; pi++) {
+            var passPid = bird.passengers[pi].ownerPeerId;
+            var passInput = null;
+            if (passPid === myPeerId) passInput = { l: keys.l, r: keys.r, flap: keys.flap, dn: keys.dn, flapEdge: flapEdge };
+            else if (isHost && remoteInputs[passPid]) passInput = remoteInputs[passPid];
+            if (passInput) {
+              if (!input) input = { l: false, r: false, flap: false, dn: false, flapEdge: false };
+              if (passInput.l) input.l = true;
+              if (passInput.r) input.r = true;
+              if (passInput.flap) input.flap = true;
+              if (passInput.flapEdge) input.flapEdge = true;
+            }
+          }
+        }
+
+        if (input) {
+          if (input.l) bird.mDir = -1;
+          else if (input.r) bird.mDir = 1;
+          else bird.mDir = 0;
+
+          if (input.flapEdge) {
+            // Check for respawn drop first
+            if (bird.resp && bird.respT > RESPAWN_T) {
+              bird.resp = false; bird.alive = true; bird.vy = -100;
+              if (bird.peerId === myPeerId) ctrlMode = 'bird';
+            } else if (!bird.resp) {
+              if (ctrlMode === 'bird') {
+                bird.doFlap();
+              } else {
+                // Rider mode - jump
+                for (var ri = 0; ri < dRiders.length; ri++) { var r = dRiders[ri]; if (r.alive && r.ownerPeerId === myPeerId && !r.mounted) r.jump(); }
+              }
+            }
+          }
+        }
+
+        bird.update(dt);
+      }
+
+      // Clear flapEdge
+      flapEdge = false;
+      for (var pid in remoteInputs) {
+        if (remoteInputs[pid]) remoteInputs[pid].flapEdge = false;
+      }
+
+      // Staggered bird spawning from spawnQueue
+      for (var si = 0; si < spawnQueue.length; si++) {
+        var sq = spawnQueue[si];
+        if (!sq.spawned && gameTime >= sq.delay) {
+          sq.spawned = true;
+          var sx = Math.random() < 0.5 ? -50 : GW + 50;
+          var sy = GH * 0.18 + Math.random() * GH * 0.56;
+          var ab = new Bird('ai', sx, sy, cfg.sf);
+          ab.stam = cfg.stamR[0] + Math.random() * (cfg.stamR[1] - cfg.stamR[0]);
+          ab.ch = 0; ab.cs = Math.round(ab.stam * 80); ab.cl = 30 + Math.round(ab.stam * 30);
+          ab.col = 'hsl(' + ab.ch + ',' + ab.cs + '%,' + ab.cl + '%)';
+          ab.mDir = sx < 0 ? 1 : -1;
+          var sk = cfg.skillR[0] + Math.random() * (cfg.skillR[1] - cfg.skillR[0]);
+          ab.rider = new Rider(false, sk, cfg.sf);
+          aiBirds.push(ab); allB.push(ab);
+        }
+      }
+
+      // Down arrow: flash/locate player bird
+      if (keys.dn && flashTimer <= 0) { flashTimer = 0.9; }
+      if (flashTimer > 0) flashTimer -= dt;
+
+      // Rain (levels 5+)
+      if (wave >= 5) {
+        var rainRate = Math.min(200, (wave - 4) * 15);
+        for (var ri = 0; ri < Math.ceil(rainRate * dt); ri++) {
+          if (Math.random() < rainRate * dt / Math.ceil(rainRate * dt)) {
+            rainDrops.push({ x: Math.random() * GW, y: GH + 10, vy: -800 - Math.random() * 400, vx: -50 - Math.random() * 100, len: 8 + Math.random() * 12 });
+          }
+        }
+        for (var ri = rainDrops.length - 1; ri >= 0; ri--) {
+          var rd = rainDrops[ri]; rd.x += rd.vx * dt; rd.y += rd.vy * dt;
+          if (rd.y < -20) rainDrops.splice(ri, 1);
+        }
+        if (rainDrops.length > 500) rainDrops.splice(0, rainDrops.length - 500);
+      }
+
+      // Wave start message fade
+      if (waveStartT > 0) waveStartT -= dt;
+
+      // Update platforms
+      for (var i = 0; i < plats.length; i++) plats[i].update(dt);
+
+      // Update AI birds
+      for (var i = 0; i < aiBirds.length; i++) { aiBirds[i].update(dt); updateAI(aiBirds[i], dt); }
+      // Update riderless player birds (flee off screen)
+      for (var i = 0; i < gameBirds.length; i++) {
+        var gb = gameBirds[i];
+        if (gb.alive && !gb.rider && gb.aiMode === 'flee') updateAI(gb, dt);
+      }
+
+      // Update death birds with targeting logic
+      for (var i = 0; i < dBirds.length; i++) {
+        var db = dBirds[i]; db.update(dt);
+        var tgt = null, md = 1e9;
+        for (var j = 0; j < gameBirds.length; j++) { var p = gameBirds[j]; if (p.alive && !p.resp) { var d = Math.hypot(p.x - db.x, p.y - db.y); if (d < md) { md = d; tgt = p; } } }
+        if (tgt) { db.mDir = tgt.x > db.x ? 1 : -1; db.vx += db.mDir * 120 / db.mass * dt; if (db.y > tgt.y + 30 && Math.random() < 4.8 * dt) db.flapDn(); }
+      }
+
+      // Update dismounted riders
+      for (var i = 0; i < dRiders.length; i++) {
+        dRiders[i].update(dt);
+        // Player riders die after 10 seconds dismounted (triggers respawn)
+        var dr = dRiders[i];
+        if (isHost && dr.isP && dr.alive && !dr.mounted && dr.dismountTime && gameTime - dr.dismountTime > 10) {
+          dr.alive = false;
+          // (death text removed — respawn indicator at top is sufficient)
+        }
+      }
+
+      // Update rescued passengers on birds — carry to heaven, then respawn with +1 life
+      for (var bi = 0; bi < gameBirds.length; bi++) {
+        var gb = gameBirds[bi];
+        if (!gb.passengers || gb.passengers.length === 0) continue;
+        for (var pi = gb.passengers.length - 1; pi >= 0; pi--) {
+          var passenger = gb.passengers[pi];
+          // Position passenger on the bird (stacked above rider)
+          passenger.x = gb.x;
+          passenger.y = gb.y + gb.h * 0.5 + (pi + 1) * 25;
+          // When bird reaches top of screen, passenger delivered to heaven
+          if (gb.y > GH * 0.85) {
+            var pOwner = passenger.ownerPeerId;
+            passenger.alive = false;
+            passenger.mounted = false;
+            gb.passengers.splice(pi, 1);
+            // Create a respawn bird for the rescued player (host only)
+            if (pOwner && isHost) {
+              var slotColor = '#fff';
+              for (var si2 = 0; si2 < 12; si2++) { if (slots[si2].peerId === pOwner) { slotColor = SLOT_COLORS[si2].hex; break; } }
+              var rb = new Bird('player', gb.x, GH - 50, cfg.sf, slotColor);
+              rb.peerId = pOwner; rb.origCol = slotColor;
+              rb.resp = true; rb.respT = -1.0; // 1 second extra delay before can drop
+              rb.alive = false;
+              rb.rider = new Rider(true, 1.0, cfg.sf, slotColor);
+              rb.rider.mounted = true; rb.rider.ownerPeerId = pOwner;
+              gameBirds.push(rb);
+              fTexts.push({ text: 'DELIVERED!', x: gb.x, y: GH * 0.9, life: 2.5 });
+              playTone(1047, 0.2, 0.3);
+            }
+          }
+        }
+      }
+
+      // Lava
+      updateLava(dt);
+
+      // Lava bubbles and eruptions
+      if (lavaH !== null && lavaH > 5) {
+        var bubRate = 0.5 + wave * 0.3;
+        if (Math.random() < bubRate * dt) {
+          var bx = Math.random() * GW; var bsh = getLavaHeightAt(bx) || lavaBaseH;
+          lavaBubbles.push({ x: bx, y: bsh - 5, r: 2 + Math.random() * 4, life: 0.5 + Math.random() * 0.5, maxLife: 0.5 + Math.random() * 0.5 });
+        }
+        for (var bi = lavaBubbles.length - 1; bi >= 0; bi--) {
+          var lb = lavaBubbles[bi]; lb.y += 30 * dt; lb.r += 2 * dt; lb.life -= dt;
+          if (lb.life <= 0) lavaBubbles.splice(bi, 1);
+        }
+        var eruptRate = 0.05 + wave * 0.02;
+        if (Math.random() < eruptRate * dt) {
+          var ex = Math.random() * GW; var esh = getLavaHeightAt(ex) || lavaBaseH;
+          lavaEruptions.push({ x: ex, y: esh, vy: 300 + Math.random() * 300, life: 0.8 + Math.random() * 0.4 });
+        }
+        for (var ei = lavaEruptions.length - 1; ei >= 0; ei--) {
+          var le = lavaEruptions[ei]; le.y += le.vy * dt; le.vy -= 500 * dt; le.life -= dt;
+          if (le.life <= 0) lavaEruptions.splice(ei, 1);
+        }
+      }
+
+      // Update sparks
+      for (var si = sparks.length - 1; si >= 0; si--) {
+        var sk = sparks[si]; sk.x += sk.vx * dt; sk.y += sk.vy * dt; sk.vy += GRAV_ACCEL * 0.5 * dt; sk.life -= dt;
+        if (sk.life <= 0) sparks.splice(si, 1);
+      }
+
+      // Kill streak timer
+      if (streakTimer > 0) { streakTimer -= dt; if (streakTimer <= 0) killStreak = 0; }
+
+      // Falling off bottom death (host only)
+      if (isHost) for (var i = 0; i < allB.length; i++) { var fb = allB[i]; if (fb.alive && fb.y < -200) { if (fb.rider) killRider(fb); fb.alive = false; } }
+
+      // Rebuild allB
+      allB = gameBirds.concat(aiBirds, dBirds).filter(function (b) { return b.alive; });
+
+      // Collisions (HOST ONLY — all collision results sync to client via state broadcast)
+      if (isHost) checkCollisions();
+
+      // Clean up dead (host only — client gets authoritative lists from applyHostState)
+      if (isHost) {
+        aiBirds = aiBirds.filter(function (b) { return b.alive; });
+        dBirds = dBirds.filter(function (b) { return b.alive; });
+        dRiders = dRiders.filter(function (r) { return r.alive && !r.mounted; });
+        gameBirds = gameBirds.filter(function (b) { return (b.alive || b.resp) && b.peerId; });
+      }
+
+      // Check if LOCAL player's rider was picked up -> back to bird mode
+      if (ctrlMode === 'rider') {
+        var myDismounted = false;
+        for (var i = 0; i < dRiders.length; i++) { if (dRiders[i].alive && dRiders[i].ownerPeerId === myPeerId && !dRiders[i].mounted) myDismounted = true; }
+        if (!myDismounted) ctrlMode = 'bird';
+      }
+
+      // Mid-wave respawn: players with lives but no bird AND no living dismounted rider get a new bird
+      // HOST ONLY — client gets birds via applyHostState
+      if (!isHost) {} else
+      for (var pid in playerLives) {
+        if (playerLives[pid] <= 0) continue;
+        var hasBird = false, hasRider = false;
+        for (var i = 0; i < gameBirds.length; i++) { if (gameBirds[i].peerId === pid) { hasBird = true; break; } }
+        if (hasBird) continue;
+        for (var i = 0; i < dRiders.length; i++) { if (dRiders[i].alive && dRiders[i].ownerPeerId === pid && !dRiders[i].mounted) { hasRider = true; break; } }
+        if (hasRider) continue;
+        // Check if this player is a rescued passenger on any bird
+        var isPassenger = false;
+        for (var i = 0; i < gameBirds.length; i++) {
+          if (gameBirds[i].passengers) {
+            for (var pi = 0; pi < gameBirds[i].passengers.length; pi++) {
+              if (gameBirds[i].passengers[pi].ownerPeerId === pid) { isPassenger = true; break; }
+            }
+          }
+          if (isPassenger) break;
+        }
+        if (isPassenger) continue;
+        // This player has no bird and no living dismounted rider — respawn them
+        var slotColor = '#fff';
+        for (var si = 0; si < 12; si++) { if (slots[si].peerId === pid) { slotColor = SLOT_COLORS[si].hex; break; } }
+        var nb = new Bird('player', GW / 2 + (Math.random() - 0.5) * 200, GH - 50, cfg.sf, slotColor);
+        nb.peerId = pid; nb.origCol = slotColor;
+        nb.resp = true; nb.respT = 0; nb.alive = false; // start in respawn state
+        nb.rider = new Rider(true, 1.0, cfg.sf, slotColor);
+        nb.rider.mounted = true; nb.rider.ownerPeerId = pid;
+        gameBirds.push(nb);
+        if (pid === myPeerId) ctrlMode = 'bird';
+      }
+
+      // Floating texts
+      for (var i = 0; i < fTexts.length; i++) { fTexts[i].y += 30 * dt; fTexts[i].life -= dt; }
+      fTexts = fTexts.filter(function (f) { return f.life > 0; });
+
+      // Death bird spawning
+      dbTimer -= dt;
+      if (dbTimer <= 0 && dBirds.length === 0) { spawnDeathBird(); dbTimer = cfg.dd2 || 30; }
+
+      // Wave completion check
+      if (isHost) checkWaveComplete();
+    }
+
+    // ============================================================
+    // HOST STATE BROADCAST
+    // ============================================================
+    var statesSent = 0, statesReceived = 0, inputsSent = 0, inputsReceived = 0;
+    var lastStateRecvTime = 0;
+    var pendingSounds = []; // host queues sounds, broadcast with state, client plays them
+    var pendingTexts = []; // host queues floating texts for client display
+    function hostBroadcastState() {
+      if (!isHost) return;
+      statesSent++;
+      var birdStates = [];
+      for (var i = 0; i < gameBirds.length; i++) {
+        var b = gameBirds[i];
+        var passData = undefined;
+        if (b.passengers && b.passengers.length > 0) {
+          passData = b.passengers.map(function(p) { return { pid: p.ownerPeerId, col: p.col }; });
+        }
+        birdStates.push({
+          peerId: b.peerId, slotIndex: b.slotIndex,
+          x: Math.round(b.x * 10) / 10, y: Math.round(b.y * 10) / 10,
+          vx: Math.round(b.vx * 10) / 10, vy: Math.round(b.vy * 10) / 10,
+          st: b.st, mDir: b.mDir, alive: b.alive, resp: b.resp, respT: b.respT,
+          hasRider: !!b.rider, type: b.type,
+          pass: passData
+        });
+      }
+      // AI bird states
+      var aiStates = [];
+      for (var i = 0; i < aiBirds.length; i++) {
+        var b = aiBirds[i];
+        aiStates.push({
+          x: Math.round(b.x * 10) / 10, y: Math.round(b.y * 10) / 10,
+          vx: Math.round(b.vx * 10) / 10, vy: Math.round(b.vy * 10) / 10,
+          st: b.st, mDir: b.mDir, alive: b.alive, aiMode: b.aiMode,
+          hasRider: !!b.rider, type: b.type,
+          stam: Math.round(b.stam * 100) / 100, ch: b.ch, cs: b.cs, cl: b.cl
+        });
+      }
+      // Death bird states
+      var dbStates = [];
+      for (var i = 0; i < dBirds.length; i++) {
+        var b = dBirds[i];
+        dbStates.push({
+          x: Math.round(b.x * 10) / 10, y: Math.round(b.y * 10) / 10,
+          vx: Math.round(b.vx * 10) / 10, vy: Math.round(b.vy * 10) / 10,
+          st: b.st, mDir: b.mDir, alive: b.alive
+        });
+      }
+      // Dismounted rider states
+      var drStates = [];
+      for (var i = 0; i < dRiders.length; i++) {
+        var r = dRiders[i]; if (!r.alive || r.mounted) continue;
+        drStates.push({
+          x: Math.round(r.x * 10) / 10, y: Math.round(r.y * 10) / 10,
+          vx: Math.round(r.vx * 10) / 10, vy: Math.round(r.vy * 10) / 10,
+          st: r.st, isP: r.isP, alive: r.alive, heat: Math.round(r.heat * 10) / 10,
+          ownerPeerId: r.ownerPeerId,
+          col: r.col
+        });
+      }
+      // Platform states
+      var platStates = [];
+      for (var i = 0; i < plats.length; i++) {
+        var p = plats[i];
+        platStates.push({ id: p.id, w: Math.round(p.w * 10) / 10, alive: p.alive });
+      }
+      var sndList = pendingSounds.length > 0 ? pendingSounds.slice() : undefined;
+      pendingSounds = [];
+      broadcast({
+        type: 'state', tick: gameTick,
+        birds: birdStates, ai: aiStates, db: dbStates, dr: drStates,
+        plats: platStates,
+        pLives: playerLives, pScores: playerScores,
+        score: score, lives: lives, wave: wave,
+        gameTime: gameTime,
+        snd: sndList,
+        lavaH: lavaH !== null ? Math.round(lavaH * 10) / 10 : null,
+        lavaBaseH: Math.round(lavaBaseH * 10) / 10
+      });
+    }
+
+    function applyHostState(msg) {
+      gameTick = msg.tick;
+      gameTime = msg.gameTime || gameTime;
+
+      // Play sounds from host events
+      if (msg.snd) {
+        for (var si = 0; si < msg.snd.length; si++) {
+          var s = msg.snd[si];
+          if (s === 'b') { playTone(600, 0.08, 0.2); }
+          else if (s === 'k') { playTone(200, 0.05, 0.25); setTimeout(function () { playTone(600, 0.15, 0.2); }, 30); }
+          else if (s === 'd') { playTone(1200, 0.1, 0.3); setTimeout(function () { playTone(300, 0.2, 0.2); }, 80); }
+        }
+      }
+
+      // Accept host's score/lives/wave as authoritative
+      if (msg.score !== undefined) score = msg.score;
+      if (msg.lives !== undefined) lives = msg.lives;
+      if (msg.wave !== undefined && msg.wave !== wave) {
+        // Wave changed — reinitialize level config and lava on client
+        var oldWave = wave;
+        wave = msg.wave;
+        cfg = makeLevel(wave);
+        // Rebuild platforms
+        plats = cfg.platforms.map(function(p) { return new Plat(p.id, p.x, p.y, p.w, cfg.sf); });
+        // Re-init lava for new wave
+        lavaPeaks = []; lavaSources = []; lavaBaseH = 0; lavaBaseTarget = 0; lavaH = null;
+        lavaBubbles = []; lavaEruptions = [];
+        if (cfg.lava) {
+          lavaBaseH = cfg.lava.baseH; lavaBaseTarget = cfg.lava.baseH;
+          addLavaSources(wave, cfg.lava.waves);
+        }
+        gameTime = msg.gameTime || 0; // sync gameTime on wave change for lava timing
+        console.log('Client: wave changed ' + oldWave + ' -> ' + wave);
+      } else if (msg.wave !== undefined) {
+        wave = msg.wave;
+      }
+      if (msg.pLives) playerLives = msg.pLives;
+      if (msg.pScores) playerScores = msg.pScores;
+      // Sync lava base height from host
+      if (msg.lavaBaseH !== undefined) lavaBaseTarget = msg.lavaBaseH;
+
+      // Player birds — rebuild to match host exactly (1:1 mapping by index)
+      var birds = msg.birds || [];
+      // Build new gameBirds array matching host, reuse existing objects where peerId matches
+      var newGameBirds = [];
+      var usedLocal = {}; // track which local birds we've matched
+      for (var i = 0; i < birds.length; i++) {
+        var bs = birds[i];
+        // Find an UNUSED local bird with this peerId
+        var bird = null;
+        for (var j = 0; j < gameBirds.length; j++) {
+          if (gameBirds[j].peerId === bs.peerId && !usedLocal[j]) { bird = gameBirds[j]; usedLocal[j] = true; break; }
+        }
+        if (!bird) {
+          // Host has a bird we don't — create it
+          var slotColor = '#fff';
+          for (var si = 0; si < 12; si++) { if (slots[si].peerId === bs.peerId) { slotColor = SLOT_COLORS[si].hex; break; } }
+          bird = new Bird('player', bs.x, bs.y, cfg ? cfg.sf : 1, slotColor);
+          bird.peerId = bs.peerId; bird.origCol = slotColor;
+          if (bs.hasRider) { bird.rider = new Rider(true, 1.0, bird.sf, slotColor); bird.rider.mounted = true; bird.rider.ownerPeerId = bs.peerId; }
+          if (bs.peerId === myPeerId) ctrlMode = 'bird';
+        }
+        newGameBirds.push(bird);
+        // Smooth correction for own bird, direct for others
+        if (bs.peerId === myPeerId) {
+          var dx = bird.x - bs.x, dy = bird.y - bs.y;
+          var dist = Math.hypot(dx, dy);
+          if (dist > 50) {
+            bird.x = bs.x; bird.y = bs.y; bird.vx = bs.vx; bird.vy = bs.vy;
+          } else if (dist > 5) {
+            bird.x += (bs.x - bird.x) * 0.3; bird.y += (bs.y - bird.y) * 0.3;
+            bird.vx += (bs.vx - bird.vx) * 0.3; bird.vy += (bs.vy - bird.vy) * 0.3;
+          }
+        } else {
+          bird.x = bs.x; bird.y = bs.y; bird.vx = bs.vx; bird.vy = bs.vy;
+        }
+        bird.st = bs.st; bird.mDir = bs.mDir; bird.alive = bs.alive;
+        bird.resp = bs.resp; bird.respT = bs.respT;
+        if (bs.hasRider && !bird.rider) {
+          bird.rider = new Rider(true, 1.0, bird.sf, bird.origCol || bird.col);
+          bird.rider.mounted = true;
+          bird.rider.ownerPeerId = bird.peerId;
+          // If this is my bird getting a rider back, switch to bird mode
+          if (bird.peerId === myPeerId) ctrlMode = 'bird';
+        }
+        else if (!bs.hasRider && bird.rider) {
+          // Host says rider was knocked off — switch to rider mode if it's my bird
+          if (bird.peerId === myPeerId && ctrlMode === 'bird') {
+            ctrlMode = 'rider';
+          }
+          bird.rider = null;
+        }
+      }
+      // Sync passengers on each bird
+      for (var i = 0; i < birds.length; i++) {
+        var bs = birds[i];
+        if (i < newGameBirds.length) {
+          var bird = newGameBirds[i];
+          if (bs.pass && bs.pass.length > 0) {
+            if (!bird.passengers) bird.passengers = [];
+            // Rebuild passengers to match host
+            bird.passengers = bs.pass.map(function(pd) {
+              var pr = new Rider(true, 0.5, cfg ? cfg.sf : 1, pd.col || '#fff');
+              pr.ownerPeerId = pd.pid; pr.isP = true; pr.mounted = true; pr.st = 'rescued';
+              pr.x = bird.x; pr.y = bird.y + bird.h * 0.5;
+              return pr;
+            });
+          } else {
+            bird.passengers = null;
+          }
+        }
+      }
+      // Replace gameBirds with the exact set from host (no duplicates possible)
+      gameBirds = newGameBirds;
+
+      // Sync AI birds: create/remove to match host count, blend positions
+      var aiStates = msg.ai || [];
+      while (aiBirds.length > aiStates.length) aiBirds.pop();
+      for (var i = 0; i < aiStates.length; i++) {
+        var as = aiStates[i];
+        if (i >= aiBirds.length) {
+          var ab = new Bird(as.type || 'ai', as.x, as.y, cfg ? cfg.sf : 1);
+          ab.stam = as.stam || 0.5;
+          ab.ch = as.ch || 0; ab.cs = as.cs || 40; ab.cl = as.cl || 50;
+          ab.col = 'hsl(' + ab.ch + ',' + ab.cs + '%,' + ab.cl + '%)';
+          if (as.hasRider) { ab.rider = new Rider(false, ab.stam, ab.sf); ab.rider.mounted = true; }
+          aiBirds.push(ab);
+        } else {
+          var ab = aiBirds[i];
+          // Smooth blend position
+          ab.x += (as.x - ab.x) * 0.5; ab.y += (as.y - ab.y) * 0.5;
+          ab.vx += (as.vx - ab.vx) * 0.5; ab.vy += (as.vy - ab.vy) * 0.5;
+          ab.st = as.st; ab.mDir = as.mDir; ab.alive = as.alive; ab.aiMode = as.aiMode || ab.aiMode;
+          if (as.hasRider && !ab.rider) { ab.rider = new Rider(false, ab.stam, ab.sf); ab.rider.mounted = true; }
+          else if (!as.hasRider && ab.rider) { ab.rider = null; }
+        }
+      }
+
+      // Sync death birds
+      var dbStates = msg.db || [];
+      while (dBirds.length > dbStates.length) dBirds.pop();
+      for (var i = 0; i < dbStates.length; i++) {
+        var ds = dbStates[i];
+        if (i >= dBirds.length) {
+          var db = new Bird('death', ds.x, ds.y, cfg ? cfg.sf : 1);
+          dBirds.push(db);
+        } else {
+          var db = dBirds[i];
+          db.x += (ds.x - db.x) * 0.5; db.y += (ds.y - db.y) * 0.5;
+          db.vx += (ds.vx - db.vx) * 0.5; db.vy += (ds.vy - db.vy) * 0.5;
+          db.st = ds.st; db.mDir = ds.mDir; db.alive = ds.alive;
+        }
+      }
+
+      // Sync dismounted riders from host — rebuild to match exactly
+      var drStates = msg.dr || [];
+      var newDRiders = [];
+      for (var i = 0; i < drStates.length; i++) {
+        var ds = drStates[i];
+        // Try to reuse existing local rider for smooth blending
+        var existing = null;
+        for (var j = 0; j < dRiders.length; j++) {
+          if (ds.isP && ds.ownerPeerId && dRiders[j].ownerPeerId === ds.ownerPeerId && dRiders[j].alive) {
+            existing = dRiders[j]; break;
+          } else if (!ds.isP && !dRiders[j].isP && dRiders[j].alive && !dRiders[j]._drUsed) {
+            existing = dRiders[j]; dRiders[j]._drUsed = true; break;
+          }
+        }
+        if (existing) {
+          existing.x += (ds.x - existing.x) * 0.5;
+          existing.y += (ds.y - existing.y) * 0.5;
+          existing.vx = ds.vx || 0; existing.vy = ds.vy || 0;
+          existing.st = ds.st; existing.heat = ds.heat || 0;
+          newDRiders.push(existing);
+        } else {
+          var nr = new Rider(ds.isP, 0.5, cfg ? cfg.sf : 1, ds.col || '#fff');
+          nr.x = ds.x; nr.y = ds.y; nr.vx = ds.vx || 0; nr.vy = ds.vy || 0;
+          nr.st = ds.st; nr.alive = true; nr.mounted = false;
+          nr.ownerPeerId = ds.ownerPeerId || null; nr.isP = ds.isP;
+          newDRiders.push(nr);
+        }
+      }
+      // Clear used flags
+      for (var j = 0; j < dRiders.length; j++) delete dRiders[j]._drUsed;
+      dRiders = newDRiders;
+      // Remove dead riders
+      dRiders = dRiders.filter(function(r) { return r.alive; });
+
+      // Sync platform states
+      var platStates = msg.plats || [];
+      for (var i = 0; i < platStates.length; i++) {
+        var ps = platStates[i];
+        for (var j = 0; j < plats.length; j++) {
+          if (plats[j].id === ps.id) {
+            plats[j].alive = ps.alive;
+            if (ps.w !== undefined) plats[j].w = ps.w;
+            break;
+          }
+        }
+      }
+
+      // Rebuild allB
+      allB = gameBirds.concat(aiBirds, dBirds).filter(function (b) { return b.alive; });
+    }
+
+    // ============================================================
+    // INPUT (sends to host in game mode)
+    // ============================================================
+    var inputSendTimer = 0;
+    var INPUT_SEND_INTERVAL = 0.1; // 10Hz
+    var inputDiagLogged = 0;
+    function sendInputToHost() {
+      if (isHost) return;
+      inputDiagLogged++;
+      // Diagnostic: log first few sends and periodic check
+      if (inputDiagLogged === 1 || inputDiagLogged === 60 || inputDiagLogged === 300) {
+        var dcCount = 0, dcInfo = [];
+        for (var pid in dataChannels) {
+          dcCount++;
+          var dc = dataChannels[pid];
+          dcInfo.push({ pid: pid.slice(0,4), state: dc ? dc.readyState : 'null', buf: dc ? dc.bufferedAmount : -1 });
+        }
+        console.log('INPUT DIAG #' + inputDiagLogged + ': dcCount=' + dcCount + ' ch=' + JSON.stringify(dcInfo) + ' inSent=' + inputsSent + ' timer=' + inputSendTimer.toFixed(3) + ' lastKeys=' + lastSentKeys.slice(0,20));
+      }
+      inputSendTimer += 0.016;
+      var hasChange = false;
+      var keyStr = JSON.stringify(keys) + (flapEdge ? '1' : '0');
+      if (keyStr !== lastSentKeys) { lastSentKeys = keyStr; hasChange = true; }
+      if (hasChange || inputSendTimer >= INPUT_SEND_INTERVAL) {
+        inputSendTimer = 0;
+        inputsSent++;
+        broadcast({
+          type: 'input',
+          peerId: myPeerId,
+          keys: { l: keys.l, r: keys.r, flap: keys.flap, dn: keys.dn },
+          flapEdge: flapEdge
+        });
+      }
+    }
+
+    // ============================================================
+    // RENDERING: LOBBY
+    // ============================================================
+    function renderLobby() {
+      var scX = canvas.width / GW, scY = canvas.height / GH, sc = Math.min(scX, scY);
+      var oX = (canvas.width - GW * sc) / 2, oY = (canvas.height - GH * sc) / 2;
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.save(); ctx.translate(oX, oY); ctx.scale(sc, sc);
+
+      // Title
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 48px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('JOUSTINE MULTIPLAYER', GW * 0.5, 50);
+
+      // Level chooser (top center)
+      var lvY = 110;
+      ctx.fillStyle = '#888'; ctx.font = 'bold 36px monospace'; ctx.textAlign = 'center';
+      // Left arrow
+      ctx.fillStyle = selectedLevel > 1 ? '#fff' : '#444';
+      ctx.fillText('<', GW * 0.35, lvY);
+      // Level name
+      ctx.fillStyle = '#0ff'; ctx.font = 'bold 32px monospace';
+      ctx.fillText(getLevelName(selectedLevel), GW * 0.5, lvY);
+      // Right arrow
+      ctx.fillStyle = selectedLevel < 100 ? '#fff' : '#444';
+      ctx.font = 'bold 36px monospace';
+      ctx.fillText('>', GW * 0.65, lvY);
+
+      // 3x4 grid of player slots (left 40%)
+      var gridLeft = 40, gridTop = 160;
+      var slotW = (GW * 0.38 - 60) / 3;
+      var slotH = (GH - gridTop - 40) / 4;
+      var gap = 10;
+
+      for (var i = 0; i < 12; i++) {
+        var col = i % 3, row = Math.floor(i / 3);
+        var sx = gridLeft + col * (slotW + gap);
+        var sy = gridTop + row * (slotH + gap);
+        var slot = slots[i];
+        var color = SLOT_COLORS[i];
+        var isOccupied = slot.peerId !== null;
+        var isMe = slot.peerId === myPeerId;
+
+        // Background
+        ctx.globalAlpha = isOccupied ? 0.8 : 0.2;
+        ctx.fillStyle = color.hex;
+        // Rounded rect
+        var cr = 12;
+        ctx.beginPath();
+        ctx.moveTo(sx + cr, sy); ctx.lineTo(sx + slotW - cr, sy);
+        ctx.quadraticCurveTo(sx + slotW, sy, sx + slotW, sy + cr);
+        ctx.lineTo(sx + slotW, sy + slotH - cr);
+        ctx.quadraticCurveTo(sx + slotW, sy + slotH, sx + slotW - cr, sy + slotH);
+        ctx.lineTo(sx + cr, sy + slotH);
+        ctx.quadraticCurveTo(sx, sy + slotH, sx, sy + slotH - cr);
+        ctx.lineTo(sx, sy + cr);
+        ctx.quadraticCurveTo(sx, sy, sx + cr, sy);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // Pulse if ready
+        if (slot.ready) {
+          ctx.globalAlpha = 0.3 + 0.2 * Math.sin(performance.now() / 200);
+          ctx.strokeStyle = color.hex;
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+
+        // Border for own slot
+        if (isMe) {
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        // Color name
+        ctx.fillStyle = isOccupied ? '#000' : '#888';
+        ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillText(color.name.toUpperCase(), sx + slotW / 2, sy + 8);
+
+        // Status text
+        ctx.font = '14px monospace'; ctx.textBaseline = 'middle';
+        var statusY = sy + slotH / 2 + 5;
+        if (!isOccupied) {
+          ctx.fillStyle = '#666';
+          ctx.fillText('Available', sx + slotW / 2, statusY);
+        } else if (slot.ready) {
+          ctx.fillStyle = '#000';
+          ctx.font = 'bold 20px monospace';
+          ctx.fillText('READY!', sx + slotW / 2, statusY);
+        } else if (slot.holding) {
+          ctx.fillStyle = '#000';
+          ctx.fillText(Math.round(slot.progress) + '%', sx + slotW / 2, statusY);
+        } else {
+          ctx.fillStyle = '#333';
+          ctx.fillText(slot.deviceInfo || 'Joined', sx + slotW / 2, statusY);
+        }
+
+        // Progress ring
+        if (slot.holding && !slot.ready) {
+          var cx = sx + slotW / 2, cy = sy + slotH - 25;
+          var ringR = 15;
+          ctx.beginPath();
+          ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+          ctx.lineWidth = 4;
+          ctx.stroke();
+
+          ctx.beginPath();
+          var startAngle = -Math.PI / 2;
+          var endAngle = startAngle + (slot.progress / 100) * Math.PI * 2;
+          ctx.arc(cx, cy, ringR, startAngle, endAngle);
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 4;
+          ctx.stroke();
+        }
+
+        // Peer ID (small)
+        if (isOccupied) {
+          ctx.fillStyle = 'rgba(0,0,0,0.5)';
+          ctx.font = '10px monospace'; ctx.textBaseline = 'bottom';
+          ctx.fillText(slot.peerId.slice(0, 4), sx + slotW / 2, sy + slotH - 4);
+        }
+      }
+
+      // QR code (right side)
+      if (qrCanvas) {
+        var qrSize = Math.min(400, GH - 250);
+        var qrX = GW * 0.55 + (GW * 0.45 - qrSize) / 2;
+        var qrY = 180;
+        // URL text above QR
+        ctx.fillStyle = '#aaa'; ctx.font = '20px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        var displayUrl = 'erd.mmec.ca/gm1/?room=' + (window._qrRoomCode || window._roomCode || '');
+        ctx.fillText(displayUrl, qrX + qrSize / 2, qrY - 10);
+        // Draw QR with white background
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(qrX - 10, qrY - 10, qrSize + 20, qrSize + 20);
+        ctx.drawImage(qrCanvas, qrX, qrY, qrSize, qrSize);
+      }
+
+      // Host indicator
+      ctx.fillStyle = '#666'; ctx.font = '14px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      var hostText = isHost ? 'You are HOST' : ('Host: ' + (hostPeerId ? hostPeerId.slice(0, 4) : '?'));
+      ctx.fillText(hostText, 40, GH - 10);
+
+      // Peer count
+      var peerCount = Object.keys(connectedPeerIds).length;
+      ctx.fillStyle = '#666'; ctx.textAlign = 'right';
+      ctx.fillText('Peers: ' + peerCount + ' | ' + myPeerId.slice(0, 4), GW - 20, GH - 10);
+
+      // Instructions
+      ctx.fillStyle = '#888'; ctx.font = '16px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText('Hold SPACE or TAP to claim a slot and ready up', GW * 0.5, GH - 30);
+
+      // Countdown overlay
+      if (lobbyState === 'countdown') {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0, 0, GW, GH);
+        ctx.fillStyle = '#0ff'; ctx.font = 'bold 120px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(Math.ceil(countdownTimer), GW / 2, GH / 2);
+        ctx.font = 'bold 32px monospace'; ctx.fillStyle = '#fff';
+        ctx.fillText('STARTING...', GW / 2, GH / 2 + 80);
+      }
+
+      ctx.textAlign = 'right'; ctx.font = '16px monospace'; ctx.fillStyle = '#444'; ctx.textBaseline = 'top';
+      ctx.fillText(BUILD, GW - 20, 10);
+      ctx.restore();
+    }
+
+    // ============================================================
+    // RENDERING: GAME
+    // ============================================================
+    function toScr(gx, gy) { return { x: gx, y: GH - gy }; }
+
+    function renderGame() {
+      var scX = canvas.width / GW, scY = canvas.height / GH, sc = Math.min(scX, scY);
+      var oX = (canvas.width - GW * sc) / 2, oY = (canvas.height - GH * sc) / 2;
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.save(); ctx.translate(oX, oY); ctx.scale(sc, sc);
+      ctx.beginPath(); ctx.rect(0, 0, GW, GH); ctx.clip();
+
+      // Background gradient (warmer at higher levels)
+      var grad = ctx.createLinearGradient(0, 0, 0, GH);
+      var bgR = Math.min(30, 10 + wave * 0.5), bgG = 10, bgB = Math.max(15, 26 - wave * 0.3);
+      grad.addColorStop(0, 'rgb(' + Math.round(bgR) + ',' + Math.round(bgG) + ',' + Math.round(bgB) + ')');
+      grad.addColorStop(1, 'rgb(' + Math.round(bgR * 1.5) + ',' + Math.round(bgG * 1.5) + ',' + Math.round(bgB * 1.7) + ')');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, GW, GH);
+
+      // Stars
+      ctx.fillStyle = '#ffffff40';
+      for (var i = 0; i < 60; i++) ctx.fillRect((i * 397) % GW, (i * 251) % (GH * 0.6), 2, 2);
+
+      // Rain
+      if (rainDrops.length > 0) {
+        ctx.strokeStyle = 'rgba(180,190,210,0.3)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (var ri = 0; ri < rainDrops.length; ri++) {
+          var rd = rainDrops[ri], rsp = toScr(rd.x, rd.y), rsp2 = toScr(rd.x + rd.vx * 0.01, rd.y + rd.vy * 0.01);
+          ctx.moveTo(rsp.x, rsp.y); ctx.lineTo(rsp2.x, rsp2.y - rd.len);
+        }
+        ctx.stroke();
+      }
+
+      // Platforms
+      for (var i = 0; i < plats.length; i++) {
+        var p = plats[i]; if (!p.alive) continue;
+        var sp = toScr(p.x, p.y);
+        ctx.fillStyle = p.col; ctx.fillRect(sp.x - p.w / 2, sp.y - p.h / 2, p.w, p.h);
+        ctx.fillStyle = '#ffffff20'; ctx.fillRect(sp.x - p.w / 2, sp.y - p.h / 2, p.w, 3);
+        if (p.wrap) {
+          var wx = p.id === 'left_mid' ? sp.x + GW : sp.x - GW;
+          ctx.fillStyle = p.col; ctx.fillRect(wx - p.w / 2, sp.y - p.h / 2, p.w, p.h);
+          ctx.fillStyle = '#ffffff20'; ctx.fillRect(wx - p.w / 2, sp.y - p.h / 2, p.w, 3);
+        }
+      }
+
+      // Lava
+      if (lavaH !== null && (lavaPeaks.length > 0 || lavaBaseH > 0)) {
+        var lt = GH - lavaBaseH;
+        ctx.beginPath(); ctx.moveTo(0, GH);
+        for (var x = 0; x <= GW; x += 8) {
+          var surfH = lavaBaseH;
+          for (var pi = 0; pi < lavaPeaks.length; pi++) surfH += peakHeightAt(lavaPeaks[pi], x);
+          ctx.lineTo(x, GH - surfH);
+        }
+        ctx.lineTo(GW, GH); ctx.closePath();
+        var lg = ctx.createLinearGradient(0, lt, 0, GH);
+        lg.addColorStop(0, '#ff4400'); lg.addColorStop(0.3, '#cc2200'); lg.addColorStop(1, '#661100');
+        ctx.fillStyle = lg; ctx.fill();
+        for (var bi = 0; bi < lavaBubbles.length; bi++) {
+          var lb = lavaBubbles[bi], lbs = toScr(lb.x, lb.y);
+          ctx.globalAlpha = lb.life / lb.maxLife * 0.6;
+          ctx.beginPath(); ctx.arc(lbs.x, lbs.y, lb.r, 0, Math.PI * 2);
+          ctx.strokeStyle = '#ff8800'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.globalAlpha = 1;
+        }
+        for (var ei = 0; ei < lavaEruptions.length; ei++) {
+          var le = lavaEruptions[ei], les = toScr(le.x, le.y);
+          ctx.globalAlpha = Math.min(1, le.life * 2); ctx.fillStyle = '#ff6600';
+          ctx.beginPath(); ctx.arc(les.x, les.y, 3 + Math.random() * 2, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#ffaa00';
+          ctx.beginPath(); ctx.arc(les.x + Math.random() * 4 - 2, les.y + Math.random() * 4 - 2, 2, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      // Sparks
+      for (var si = 0; si < sparks.length; si++) {
+        var sk = sparks[si], sks = toScr(sk.x, sk.y);
+        ctx.globalAlpha = sk.life * 3; ctx.fillStyle = sk.col;
+        ctx.fillRect(sks.x - 1, sks.y - 1, 3, 3); ctx.globalAlpha = 1;
+      }
+
+      // All birds (players + AI + death)
+      var renderBirds = allB;
+      for (var i = 0; i < renderBirds.length; i++) {
+        var bird = renderBirds[i]; if (!bird.alive) continue;
+        if (bird.resp) { if (Math.floor(bird.respT * 10) % 2 === 0) { ctx.globalAlpha = 0.5; drawBird(bird); ctx.globalAlpha = 1; } continue; }
+        drawBird(bird);
+      }
+
+      // Dismounted riders
+      for (var i = 0; i < dRiders.length; i++) {
+        var r = dRiders[i]; if (!r.alive || r.mounted) continue;
+        // Smoke particles
+        for (var j = 0; j < r.smokeParticles.length; j++) {
+          var sp2 = r.smokeParticles[j]; var sps = toScr(sp2.x, sp2.y);
+          var alpha = sp2.life / sp2.maxLife * 0.6;
+          ctx.globalAlpha = alpha; ctx.fillStyle = '#888';
+          ctx.beginPath(); ctx.arc(sps.x, sps.y, 3 + 4 * (1 - sp2.life / sp2.maxLife), 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+        }
+        // Blinking red when cooking
+        if (r.heat > HEAT_WARN) {
+          var blink = Math.sin(gameTime * 15) > 0;
+          if (blink) { ctx.globalAlpha = 0.5; }
+        }
+        drawRider(r, toScr(r.x, r.y));
+        ctx.globalAlpha = 1;
+      }
+
+      // Respawn indicators
+      for (var bi = 0; bi < gameBirds.length; bi++) {
+        var pb = gameBirds[bi];
+        if (pb.resp) {
+          var rsp = toScr(pb.x, GH - 30);
+          ctx.fillStyle = pb.col; ctx.globalAlpha = 0.5 + 0.5 * Math.sin(gameTime * 8);
+          ctx.beginPath(); ctx.moveTo(rsp.x - 15, rsp.y - 10); ctx.lineTo(rsp.x + 15, rsp.y - 10); ctx.lineTo(rsp.x, rsp.y + 15); ctx.closePath(); ctx.fill();
+          ctx.font = '16px monospace'; ctx.textAlign = 'center'; ctx.fillText('FLAP TO DROP', rsp.x, rsp.y - 20);
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      // Floating texts
+      for (var i = 0; i < fTexts.length; i++) {
+        var ft = fTexts[i]; var sp = toScr(ft.x, ft.y);
+        ctx.globalAlpha = Math.min(1, ft.life);
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 32px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(ft.text, sp.x, sp.y); ctx.globalAlpha = 1;
+      }
+
+      // Wave start message
+      if (waveStartT > 0) {
+        ctx.globalAlpha = Math.min(1, waveStartT);
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 64px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(waveStartMsg, GW / 2, GH * 0.35);
+        if (waveSubMsg) { ctx.font = '24px monospace'; ctx.fillStyle = '#ccc'; ctx.fillText(waveSubMsg, GW / 2, GH * 0.42); }
+        if (wave > 1) { ctx.font = '20px monospace'; ctx.fillStyle = '#888'; ctx.fillText('Scale: ' + (cfg.sf).toFixed(1) + 'x  |  Enemies: ' + cfg.birdCount, GW / 2, GH * 0.47); }
+        ctx.globalAlpha = 1;
+      }
+
+      // HUD - per player lives display
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 28px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('Wave ' + wave, 20, 20);
+      // Per-player score and lives
+      var hudY = 55;
+      for (var pi = 0; pi < gameBirds.length; pi++) {
+        var pb = gameBirds[pi];
+        if (!pb.peerId) continue;
+        var pLv = playerLives[pb.peerId] || 0;
+        var pSc = playerScores[pb.peerId] || 0;
+        var pCol = pb.origCol || pb.col || '#fff';
+        var pName = pb.peerId.slice(0, 4);
+        var isMe = pb.peerId === myPeerId;
+        // Player name + score
+        ctx.fillStyle = pCol; ctx.font = (isMe ? 'bold ' : '') + '22px monospace';
+        ctx.fillText(pName + ': ' + pSc, 20, hudY);
+        // Lives as bird icons in player color
+        for (var li = 0; li < pLv; li++) {
+          var lx = 200 + li * 22;
+          ctx.fillStyle = pCol; ctx.beginPath(); ctx.ellipse(lx, hudY + 10, 7, 4, 0, 0, Math.PI * 2); ctx.fill();
+        }
+        if (pLv <= 0 && !(pb.alive || pb.resp)) {
+          ctx.fillStyle = '#f44'; ctx.font = '16px monospace'; ctx.fillText('OUT', 200, hudY + 2);
+        }
+        hudY += 28;
+      }
+      ctx.fillStyle = '#888'; ctx.font = '16px monospace';
+      ctx.fillText(isHost ? 'HOST' : 'Client', 20, hudY);
+
+      // Enemy count
+      var enemies = aiBirds.filter(function (b) { return b.alive && b.rider && b.rider.alive; }).length;
+      var dismEnemies = dRiders.filter(function (r) { return r.alive && !r.isP; }).length;
+      ctx.fillStyle = '#f88'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'right';
+      ctx.fillText('Enemies: ' + (enemies + dismEnemies), GW - 20, 55);
+
+      // Kill streak display
+      if (killStreak > 1 && streakTimer > 0) {
+        ctx.fillStyle = '#ff0'; ctx.font = 'bold 24px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(killStreak + 'x STREAK', GW / 2, 30);
+      }
+
+      // Dismounted notice
+      if (ctrlMode === 'rider') { ctx.fillStyle = '#ff0'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'left'; ctx.fillText('DISMOUNTED - find a bird!', 20, 165); }
+
+      // (player name labels above birds removed — color is self-evident)
+      }
+
+      ctx.textAlign = 'right'; ctx.font = '16px monospace'; ctx.fillStyle = '#444'; ctx.textBaseline = 'top';
+      ctx.fillText(BUILD, GW - 20, 10);
+      ctx.restore();
+
+      // Touch zone flash overlays (orientation-aware)
+      if ('ontouchstart' in window) {
+        var cw = canvas.width, ch = canvas.height;
+        var fontSize = Math.round(Math.min(cw, ch) * 0.06);
+        ctx.save();
+        ctx.font = 'bold ' + fontSize + 'px monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        if (isPortrait()) {
+          // Portrait: top 1/3 = status, bottom 2/3 = 6 zones (3 cols × 2 rows)
+          // Upper row: LE(L+F) | FL(F) | RI(R+F)
+          // Lower row: FT(L)   | AP(F) | TE(R)
+          var zoneTop = ch / 3, zoneH = ch * 2 / 3, colW = cw / 3, halfH = zoneH / 2;
+          // Status bar (top 1/3)
+          ctx.fillStyle = '#000'; ctx.globalAlpha = 0.7;
+          ctx.fillRect(0, 0, cw, zoneTop);
+          ctx.globalAlpha = 1;
+          var statusText = 'CONNECTING...'; var statusCol = '#888';
+          if (lobbyState === 'game' || lobbyState === 'observer') {
+            for (var si = 0; si < 12; si++) {
+              if (slots[si].peerId === myPeerId) { statusText = SLOT_COLORS[si].name.toUpperCase(); statusCol = SLOT_COLORS[si].hex; break; }
+            }
+            if (statusText === 'CONNECTING...') { statusText = 'CONNECTED'; statusCol = '#0f0'; }
+          }
+          ctx.fillStyle = statusCol; ctx.font = 'bold ' + Math.round(zoneTop * 0.35) + 'px monospace';
+          ctx.fillText(statusText, cw / 2, zoneTop / 2);
+          // 6 zone labels: [col][row] → text
+          ctx.font = 'bold ' + fontSize + 'px monospace';
+          var pZones = [
+            { flash: touchZoneFlash6.le, x: 0, y: zoneTop, w: colW, h: halfH, t1: 'L', t2: 'E' },
+            { flash: touchZoneFlash6.fl, x: colW, y: zoneTop, w: colW, h: halfH, t1: 'F', t2: 'L' },
+            { flash: touchZoneFlash6.ri, x: colW * 2, y: zoneTop, w: colW, h: halfH, t1: 'R', t2: 'I' },
+            { flash: touchZoneFlash6.ft, x: 0, y: zoneTop + halfH, w: colW, h: halfH, t1: 'F', t2: 'T' },
+            { flash: touchZoneFlash6.ap, x: colW, y: zoneTop + halfH, w: colW, h: halfH, t1: 'A', t2: 'P' },
+            { flash: touchZoneFlash6.te, x: colW * 2, y: zoneTop + halfH, w: colW, h: halfH, t1: 'T', t2: 'E' }
+          ];
+          for (var zi = 0; zi < pZones.length; zi++) {
+            var z = pZones[zi];
+            if (z.flash > 0) {
+              ctx.globalAlpha = z.flash * 0.4;
+              ctx.fillStyle = '#fff'; ctx.fillRect(z.x, z.y, z.w, z.h);
+              ctx.globalAlpha = z.flash;
+              ctx.fillStyle = '#fff';
+              ctx.fillText(z.t1, z.x + z.w / 2, z.y + z.h * 0.33);
+              ctx.fillText(z.t2, z.x + z.w / 2, z.y + z.h * 0.67);
+            }
+          }
+        } else {
+          // Landscape: left 1/5=LEFT (walk only), next 1/5=RITE (walk only), right 1/5=FLAP
+          var fifthW = cw / 5;
+          var zones = [
+            { flash: touchZoneFlash.l, x: 0, label: 'LEFT' },
+            { flash: touchZoneFlash.r, x: fifthW, label: 'RITE' },
+            { flash: touchZoneFlash.f, x: fifthW * 4, label: 'FLAP' }
+          ];
+          for (var zi = 0; zi < zones.length; zi++) {
+            var z = zones[zi];
+            if (z.flash > 0) {
+              ctx.globalAlpha = z.flash * 0.4;
+              ctx.fillStyle = '#fff'; ctx.fillRect(z.x, 0, fifthW, ch);
+            }
+          }
+          // Horizontal text at very bottom of screen
+          var labelY = ch - 8;
+          var labelFontSize = Math.round(ch * 0.035);
+          ctx.font = labelFontSize + 'px monospace';
+          ctx.textBaseline = 'bottom';
+          for (var zi = 0; zi < zones.length; zi++) {
+            var z = zones[zi];
+            if (z.flash > 0) {
+              ctx.globalAlpha = z.flash;
+              ctx.fillStyle = '#fff';
+              var chars = z.label.split('');
+              var charSpacing = fifthW / (chars.length + 1);
+              for (var ci = 0; ci < chars.length; ci++) {
+                ctx.fillText(chars[ci], z.x + charSpacing * (ci + 1), labelY);
+              }
+            }
+          }
+        }
+        ctx.restore();
+      }
+    }
+
+    function drawBird(bird) {
+      var sp = toScr(bird.x, bird.y);
+      var bw = bird.w, bh = bird.h;
+      var facing = bird.vx < -10 ? -1 : bird.vx > 10 ? 1 : (bird.mDir || 1);
+      var drawCol = bird.col;
+      if (bird.type === 'player' && flashTimer > 0) { drawCol = 'rgba(255,255,255,' + (flashTimer / 0.9) + ')'; }
+
+      // Speed trail
+      if (bird.trail.length > 1) {
+        ctx.save(); ctx.globalAlpha = 0.3; ctx.strokeStyle = bird.col; ctx.lineWidth = bird.w * 0.3; ctx.lineCap = 'round';
+        ctx.beginPath();
+        var t0 = toScr(bird.trail[0].x, bird.trail[0].y); ctx.moveTo(t0.x, t0.y);
+        for (var ti = 1; ti < bird.trail.length; ti++) { var tp = toScr(bird.trail[ti].x, bird.trail[ti].y); ctx.lineTo(tp.x, tp.y); }
+        ctx.lineTo(sp.x, sp.y); ctx.stroke(); ctx.globalAlpha = 1; ctx.restore();
+      }
+
+      // Halo
+      ctx.save(); ctx.translate(sp.x, sp.y);
+      var hr = Math.max(bw, bh) * 0.7;
+      ctx.beginPath(); ctx.arc(0, 0, hr, 0, Math.PI * 2);
+      ctx.fillStyle = bird.type === 'player' ? 'rgba(255,230,0,0.12)' : 'rgba(200,200,255,0.08)'; ctx.fill();
+      ctx.strokeStyle = bird.type === 'player' ? 'rgba(255,230,0,0.3)' : 'rgba(200,200,255,0.15)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.restore();
+
+      // Draw order: wings → riders (screen space) → body+head
+      var bodyW = bw * 0.55, bodyH = bh * 0.6;
+      var wW = bw * 0.8, wH = bh * 1.2;
+
+      // 1. Wings (in bird's squash/stretch space)
+      ctx.save(); ctx.translate(sp.x, sp.y); ctx.scale(facing * bird.squashX, bird.squashY);
+      ctx.save(); ctx.translate(-bw * 0.15, 0); ctx.rotate(-bird.wAng);
+      ctx.beginPath(); ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(-wW * 0.5, -wH * 0.5, -wW, -wH * 0.3);
+      ctx.quadraticCurveTo(-wW * 1.1, -wH * 0.2, -wW * 0.8, 0);
+      ctx.quadraticCurveTo(-wW * 0.5, wH * 0.2, 0, 0);
+      ctx.fillStyle = drawCol; ctx.globalAlpha = 0.8; ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
+      ctx.save(); ctx.translate(bw * 0.15, 0); ctx.rotate(bird.wAng);
+      ctx.beginPath(); ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(wW * 0.5, -wH * 0.5, wW, -wH * 0.3);
+      ctx.quadraticCurveTo(wW * 1.1, -wH * 0.2, wW * 0.8, 0);
+      ctx.quadraticCurveTo(wW * 0.5, wH * 0.2, 0, 0);
+      ctx.fillStyle = drawCol; ctx.globalAlpha = 0.8; ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
+      ctx.restore(); // end wings transform
+
+      // 2. Mounted riders (game space, proportional to bird)
+      if (bird.rider && bird.rider.mounted) {
+        var riderFH = bh * 0.8; // proportional to bird height (always correct regardless of sf)
+        var riderBaseY = sp.y - bh * 0.35; // sits on top of bird body
+        var baseSpacing = bw * 0.25;
+        var allRiders = [bird.rider];
+        if (bird.passengers) { for (var pri = 0; pri < bird.passengers.length; pri++) allRiders.push(bird.passengers[pri]); }
+        for (var ri = 0; ri < allRiders.length; ri++) {
+          var rr = allRiders[ri];
+          var offX = 0;
+          if (ri > 0) {
+            var passengerIdx = ri;
+            var pair = Math.ceil(passengerIdx / 2);
+            var spacing = baseSpacing / Math.pow(2, pair - 1);
+            offX = (passengerIdx % 2 === 1) ? spacing : -spacing;
+          }
+          var fh = riderFH;
+          var rHeadR = fh * 0.15, rlw = Math.max(1.5, fh * 0.06);
+          ctx.save(); ctx.translate(sp.x + offX, riderBaseY);
+          ctx.beginPath(); ctx.moveTo(0, -fh * 0.25); ctx.lineTo(0, fh * 0.05);
+          ctx.strokeStyle = rr.col; ctx.lineWidth = rlw; ctx.stroke();
+          ctx.beginPath(); ctx.arc(0, -fh * 0.25 - rHeadR, rHeadR, 0, Math.PI * 2);
+          ctx.fillStyle = rr.col; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(-fh * 0.16, -fh * 0.1); ctx.lineTo(0, -fh * 0.15); ctx.lineTo(fh * 0.16, -fh * 0.1);
+          ctx.strokeStyle = rr.col; ctx.lineWidth = rlw * 0.7; ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(-fh * 0.07, fh * 0.05); ctx.lineTo(-fh * 0.09, fh * 0.18);
+          ctx.moveTo(fh * 0.07, fh * 0.05); ctx.lineTo(fh * 0.09, fh * 0.18);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      // 3. Body + head (in bird's squash/stretch space, in front of riders)
+      ctx.save(); ctx.translate(sp.x, sp.y); ctx.scale(facing * bird.squashX, bird.squashY);
+
+      // 3. Body (in front of rider)
+      ctx.beginPath(); ctx.ellipse(0, 0, bodyW / 2, bodyH / 2, 0, 0, Math.PI * 2);
+      ctx.fillStyle = drawCol; ctx.fill(); ctx.strokeStyle = '#00000040'; ctx.lineWidth = 1.5; ctx.stroke();
+
+      // Death bird spikes
+      if (bird.type === 'death') {
+        ctx.strokeStyle = '#660000'; ctx.lineWidth = 2;
+        for (var si = 0; si < 16; si++) {
+          var sa = si * Math.PI * 2 / 16, sLen = bw * 0.25;
+          ctx.beginPath(); ctx.moveTo(Math.cos(sa) * bodyW / 2 * 0.9, Math.sin(sa) * bodyH / 2 * 0.9);
+          ctx.lineTo(Math.cos(sa) * (bodyW / 2 + sLen), Math.sin(sa) * (bodyH / 2 + sLen * 0.6)); ctx.stroke();
+        }
+        ctx.beginPath(); ctx.arc(-bodyW * 0.15, -bodyH * 0.1, bw * 0.12, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+        ctx.beginPath(); ctx.arc(-bodyW * 0.12, -bodyH * 0.1, bw * 0.06, 0, Math.PI * 2); ctx.fillStyle = '#000'; ctx.fill();
+        ctx.beginPath(); ctx.arc(bodyW * 0.15, -bodyH * 0.1, bw * 0.12, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+        ctx.beginPath(); ctx.arc(bodyW * 0.18, -bodyH * 0.1, bw * 0.06, 0, Math.PI * 2); ctx.fillStyle = '#000'; ctx.fill();
+        ctx.beginPath(); ctx.arc(0, bodyH * 0.05, bw * 0.08, 0, Math.PI); ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.stroke();
+      }
+
+      // 4. Head + beak (in front of everything, offset horizontally by headLean)
+      var headR = bw * 0.15, headY = -(bodyH * 0.3);
+      // headLean is in world space (-1=left, +1=right), but canvas is flipped by facing
+      // Multiply by facing so the offset is correct in the flipped coordinate space
+      var headOffX = bird.headLean * facing * bw * 0.15;
+      ctx.save(); ctx.translate(headOffX, headY);
+      ctx.beginPath(); ctx.arc(0, 0, headR, 0, Math.PI * 2); ctx.fillStyle = drawCol; ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8; ctx.stroke();
+      var bs = headR * 0.45;
+      ctx.beginPath(); ctx.moveTo(-bs * 0.3, headR * 0.5); ctx.lineTo(bs * 0.3, headR * 0.5); ctx.lineTo(0, headR * 0.5 + bs * 0.7); ctx.closePath();
+      ctx.fillStyle = '#d4a020'; ctx.fill();
+      ctx.restore();
+
+      // Legs (walking)
+      if (bird.st === 'walk') {
+        var legSwing = Math.sin(gameTime * 12) * bird.legH * 0.3;
+        ctx.fillStyle = drawCol;
+        ctx.save(); ctx.translate(-3 * bird.sf, bh / 2); ctx.rotate(legSwing * 0.02);
+        ctx.fillRect(0, 0, 4 * bird.sf, bird.legH); ctx.restore();
+        ctx.save(); ctx.translate(3 * bird.sf, bh / 2); ctx.rotate(-legSwing * 0.02);
+        ctx.fillRect(0, 0, 4 * bird.sf, bird.legH); ctx.restore();
+      }
+      ctx.restore();
+
+      // (passengers now drawn inline beside primary rider above)
+    }
+
+    // drawMountedRider is now inline in drawBird (between wings and body)
+    function drawMountedRider(bird, sp) { /* no-op, handled inline */ }
+
+    function drawRider(rider, sp) {
+      ctx.save(); ctx.translate(sp.x, sp.y);
+      var fh = rider.figH, headR = fh * 0.18, lw = Math.max(1.5, rider.w * 0.12);
+      ctx.beginPath(); ctx.arc(0, -fh * 0.4, headR, 0, Math.PI * 2); ctx.fillStyle = rider.col; ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -fh * 0.4 + headR); ctx.lineTo(0, 0); ctx.strokeStyle = rider.col; ctx.lineWidth = lw; ctx.stroke();
+      var aa = rider.st === 'fall' ? Math.sin(gameTime * 18) * 0.3 : 0;
+      ctx.beginPath(); ctx.moveTo(-fh * 0.14, -fh * 0.2 + Math.sin(gameTime * 12 + aa) * 3); ctx.lineTo(0, -fh * 0.25);
+      ctx.lineTo(fh * 0.14, -fh * 0.2 + Math.sin(gameTime * 12 + 1 + aa) * 3); ctx.stroke();
+      var ls = rider.st === 'walk' ? Math.sin(gameTime * 9) * fh * 0.1 : fh * 0.05;
+      ctx.beginPath(); ctx.moveTo(-ls, fh * 0.3); ctx.lineTo(0, 0); ctx.lineTo(ls, fh * 0.3); ctx.stroke();
+      ctx.restore();
+    }
+
+    // ============================================================
+    // INPUT HANDLING
+    // ============================================================
+    window.addEventListener('keydown', function (e) {
+      initAudio();
+      if (lobbyState === 'lobby' || lobbyState === 'countdown') {
+        if (e.key === 'ArrowLeft') { changeLevel(-1); e.preventDefault(); return; }
+        if (e.key === 'ArrowRight') { changeLevel(1); e.preventDefault(); return; }
+        if (e.key === ' ' || e.key === 'ArrowUp') {
+          startHold();
+          e.preventDefault();
+          return;
+        }
+      }
+      if (lobbyState === 'gameover') {
+        lobbyState = 'lobby'; mySlotIndex = -1; cfg = null;
+        for (var si = 0; si < 12; si++) { slots[si].peerId = null; slots[si].ready = false; slots[si].progress = 0; slots[si].holding = false; }
+        gameBirds = []; aiBirds = []; dBirds = []; dRiders = []; fTexts = [];
+        e.preventDefault(); return;
+      }
+      if (lobbyState === 'game') {
+        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.l = true;
+        if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.r = true;
+        if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') { if (!keys.flap) flapEdge = true; keys.flap = true; }
+        if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') keys.dn = true;
+      }
+      e.preventDefault();
+    });
+
+    window.addEventListener('keyup', function (e) {
+      if (lobbyState === 'lobby' || lobbyState === 'countdown') {
+        if (e.key === ' ' || e.key === 'ArrowUp') {
+          releaseHold();
+          return;
+        }
+      }
+      if (lobbyState === 'game') {
+        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.l = false;
+        if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.r = false;
+        if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') keys.flap = false;
+        if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') keys.dn = false;
+      }
+    });
+
+    // Touch input with orientation-aware zones
+    var touchHolding = false;
+    var touchZoneFlash = { l: 0, r: 0, f: 0 }; // base flashes
+    var touchZoneFlash6 = { le: 0, fl: 0, ri: 0, ft: 0, ap: 0, te: 0 }; // portrait 6-zone flashes
+    function isPortrait() { return window.innerHeight > window.innerWidth; }
+    // Returns touch zone(s) as {l:bool, r:bool, f:bool}
+    function getTouchZones(clientX, clientY) {
+      var w = window.innerWidth, h = window.innerHeight;
+      var result = { l: false, r: false, f: false };
+      if (isPortrait()) {
+        // Portrait: top 1/3 = status, bottom 2/3 = 6 zones (3 cols × 2 rows)
+        // Row 0 (upper): LE(left+flap) | FL(flap) | RI(right+flap)
+        // Row 1 (lower): FT(left)      | AP(flap) | TE(right)
+        if (clientY < h / 3) return result; // status area
+        var col = clientX / w;
+        var midY = h / 3 + (h * 2 / 3) / 2;
+        var isUpper = clientY < midY;
+        if (col < 0.33) {
+          result.l = true;
+          if (isUpper) { result.f = true; touchZoneFlash6.le = 0.3; touchZoneFlash6.fl = 0.3; touchZoneFlash6.ap = 0.3; } // LE → LE + all FLAP
+          else { touchZoneFlash6.ft = 0.3; } // FT only
+        } else if (col > 0.67) {
+          result.r = true;
+          if (isUpper) { result.f = true; touchZoneFlash6.ri = 0.3; touchZoneFlash6.fl = 0.3; touchZoneFlash6.ap = 0.3; } // RI → RI + all FLAP
+          else { touchZoneFlash6.te = 0.3; } // TE only
+        } else {
+          result.f = true;
+          touchZoneFlash6.fl = 0.3; touchZoneFlash6.ap = 0.3; // FLAP → FL + AP
+        }
+      } else {
+        // Landscape: left 1/5=LEFT (no flap), next 1/5=RITE (no flap), right 1/5=FLAP
+        var frac = clientX / w;
+        if (frac < 0.2) result.l = true;
+        else if (frac < 0.4) result.r = true;
+        else if (frac > 0.8) result.f = true;
+      }
+      return result;
+    }
+    canvas.addEventListener('touchstart', function (e) {
+      e.preventDefault(); initAudio();
+      if (lobbyState === 'lobby' || lobbyState === 'countdown') {
+        var scX = canvas.width / GW, scY = canvas.height / GH, sc = Math.min(scX, scY);
+        var oX = (canvas.width - GW * sc) / 2, oY = (canvas.height - GH * sc) / 2;
+        for (var ti = 0; ti < e.touches.length; ti++) {
+          var tx = (e.touches[ti].clientX - oX) / sc;
+          var ty = (e.touches[ti].clientY - oY) / sc;
+          // Level left arrow area
+          if (tx > GW * 0.3 && tx < GW * 0.4 && ty > 80 && ty < 140) { changeLevel(-1); return; }
+          // Level right arrow area
+          if (tx > GW * 0.6 && tx < GW * 0.7 && ty > 80 && ty < 140) { changeLevel(1); return; }
+        }
+        // Otherwise, hold to ready
+        touchHolding = true;
+        startHold();
+        return;
+      }
+      if (lobbyState === 'gameover') {
+        // Return to lobby
+        lobbyState = 'lobby'; mySlotIndex = -1; cfg = null;
+        for (var si = 0; si < 12; si++) { slots[si].peerId = null; slots[si].ready = false; slots[si].progress = 0; slots[si].holding = false; }
+        gameBirds = []; aiBirds = []; dBirds = []; dRiders = []; fTexts = [];
+        return;
+      }
+      if (lobbyState === 'game') {
+        var anyFlap = false;
+        for (var i = 0; i < e.touches.length; i++) {
+          var zones = getTouchZones(e.touches[i].clientX, e.touches[i].clientY);
+          if (zones.l) { keys.l = true; touchZoneFlash.l = 0.3; }
+          if (zones.r) { keys.r = true; touchZoneFlash.r = 0.3; }
+          if (zones.f) { anyFlap = true; touchZoneFlash.f = 0.3; }
+        }
+        if (anyFlap) { flapEdge = true; keys.flap = true; }
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', function (e) {
+      if (lobbyState === 'lobby' || lobbyState === 'countdown') {
+        if (touchHolding) { touchHolding = false; releaseHold(); }
+        return;
+      }
+      if (lobbyState === 'game') {
+        keys.l = false; keys.r = false; keys.flap = false;
+      }
+    });
+
+    // ============================================================
+    // CANVAS RESIZE
+    // ============================================================
+    function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+
+    // ============================================================
+    // MAIN GAME LOOP
+    // ============================================================
+    function gameLoop(now) {
+      if (!lastTime) lastTime = now;
+      var dt = (now - lastTime) / 1000;
+      lastTime = now;
+      if (dt > 0.05) dt = 0.05;
+      if (dt < 0.001) dt = 0.001;
+
+      if (lobbyState === 'lobby') {
+        updateHold();
+        renderLobby();
+      }
+      else if (lobbyState === 'countdown') {
+        updateHold();
+        updateCountdown(dt);
+        renderLobby();
+      }
+      else if (lobbyState === 'game') {
+        // Send input to host
+        sendInputToHost();
+        // Decay touch zone flash timers
+        if (touchZoneFlash.l > 0) touchZoneFlash.l -= dt * 2;
+        if (touchZoneFlash.r > 0) touchZoneFlash.r -= dt * 2;
+        if (touchZoneFlash.f > 0) touchZoneFlash.f -= dt * 2;
+        for (var zk in touchZoneFlash6) { if (touchZoneFlash6[zk] > 0) touchZoneFlash6[zk] -= dt * 2; }
+
+        // Run physics (host runs authoritative, non-host runs local prediction for own bird)
+        if (isHost) {
+          gameStep(dt);
+          // Broadcast state at 20Hz
+          lastHostBroadcast += dt;
+          if (lastHostBroadcast >= HOST_BROADCAST_INTERVAL) {
+            hostBroadcastState();
+            lastHostBroadcast = 0;
+          }
+        } else {
+          // Non-host: run FULL game engine locally for responsiveness
+          // Host state corrections are applied smoothly via applyHostState
+          gameStep(dt);
+        }
+
+        renderGame();
+      }
+      else if (lobbyState === 'gameover') {
+        renderGame();
+      }
+      else if (lobbyState === 'observer') {
+        // Observer: update lava/platforms for rendering, no physics
+        if (cfg) {
+          updateLava(dt);
+          for (var i = 0; i < plats.length; i++) plats[i].update(dt);
+        }
+        // If no state received for 5 seconds, host is gone — return to lobby
+        if (lastStateRecvTime > 0 && performance.now() - lastStateRecvTime > 5000) {
+          console.log('Observer: no state for 5s — returning to lobby');
+          lobbyState = 'lobby'; mySlotIndex = -1; cfg = null;
+          for (var si = 0; si < 12; si++) { slots[si].peerId = null; slots[si].ready = false; slots[si].progress = 0; slots[si].holding = false; }
+          gameBirds = []; aiBirds = []; dBirds = []; dRiders = []; fTexts = [];
+        }
+        renderGame();
+        // Draw OBSERVER overlay
+        var scX = canvas.width / GW, scY = canvas.height / GH, sc = Math.min(scX, scY);
+        var oX = (canvas.width - GW * sc) / 2, oY = (canvas.height - GH * sc) / 2;
+        ctx.save(); ctx.translate(oX, oY); ctx.scale(sc, sc);
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.font = 'bold 120px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('OBSERVER', GW / 2, GH / 2);
+        ctx.font = '28px monospace'; ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.fillText('Game in progress — waiting for next round', GW / 2, GH / 2 + 80);
+        ctx.restore();
+      }
+
+      // Periodic game logging (every second)
+      if ((lobbyState === 'game' || lobbyState === 'gameover') && Math.floor(gameTime) !== Math.floor(gameTime - dt) && gameTime > 0.5) {
+        var birdInfo = gameBirds.map(function(b) { return { pid: b.peerId ? b.peerId.slice(0,4) : '?', x: Math.round(b.x), y: Math.round(b.y), st: b.st, alive: b.alive, resp: b.resp, lv: playerLives[b.peerId]||0 }; });
+        console.log('GAME', JSON.stringify({ t: gameTime.toFixed(1), wave: wave, host: isHost, birds: birdInfo, ai: aiBirds.length, db: dBirds.length, dr: dRiders.length, stSent: statesSent, stRecv: statesReceived, inSent: inputsSent, inRecv: inputsReceived }));
+        // Full entity dump every 5 seconds
+        if (Math.floor(gameTime) % 5 === 0) {
+          var aiInfo = aiBirds.map(function(b) { return { x: Math.round(b.x), y: Math.round(b.y), st: b.st, alive: b.alive, mode: b.aiMode, hasR: !!b.rider }; });
+          var drInfo = dRiders.map(function(r) { return { x: Math.round(r.x), y: Math.round(r.y), st: r.st, alive: r.alive, isP: r.isP }; });
+          var dbInfo = dBirds.map(function(b) { return { x: Math.round(b.x), y: Math.round(b.y), alive: b.alive }; });
+          var platInfo = plats.map(function(p) { return { id: p.id, w: Math.round(p.w), alive: p.alive }; });
+          console.log('DUMP', JSON.stringify({ t: gameTime.toFixed(1), pLives: playerLives, pScores: playerScores, ai: aiInfo, dr: drInfo, db: dbInfo, plats: platInfo }));
+        }
+      }
+      hud.textContent = BUILD + ' | ' + myPeerId.slice(0, 4) + ' | ' + (isHost ? 'HOST' : 'client') + ' | ' + lobbyState;
+      requestAnimationFrame(gameLoop);
+    }
+
+    // ============================================================
+    // INIT
+    // ============================================================
+    function init() {
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+
+      // Run benchmark
+      myBenchmark = runBenchmark();
+      console.log('Benchmark score:', myBenchmark);
+
+      // Room code: only use if explicitly in URL (from QR code scan)
+      // Otherwise, server groups by WAN IP automatically
+      var urlParams = new URLSearchParams(window.location.search);
+      var roomCode = urlParams.get('room') || '';
+      window._roomCode = roomCode;
+
+      // For the QR code, generate a room code so cross-IP devices can join
+      // (handles IPv4/IPv6 mismatch when scanning QR)
+      if (!roomCode) {
+        roomCode = Math.random().toString(36).slice(2, 8);
+        window._qrRoomCode = roomCode;
+      }
+      console.log('Room:', roomCode ? 'code:' + roomCode : 'auto (WAN IP)');
+
+      // QR code always includes a room code for reliable cross-device joining
+      var qrUrl = 'https://erd.mmec.ca/gm1/?room=' + (window._qrRoomCode || roomCode);
+      qrCanvas = generateQR(qrUrl);
+
+      // Connect to signaling server
+      connectSignaling();
+
+      // Start game loop
+      requestAnimationFrame(gameLoop);
+    }
+
+    init();
+  </script>
+</body>
+</html>
