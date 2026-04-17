@@ -1976,7 +1976,7 @@
       };
 
       if (isInitiator) {
-        var dc = pc.createDataChannel('game', { ordered: false, maxRetransmits: 0 });
+        var dc = pc.createDataChannel('game');
         setupDataChannel(dc, peerId);
         pc.createOffer().then(function (offer) {
           return pc.setLocalDescription(offer);
